@@ -1,6 +1,7 @@
 import express, { Application } from 'express';
 import repoRoutes from './api/repo';
 import cors from 'cors';
+import fileRoutes from './api/file';
 
 const app: Application = express();
 
@@ -18,5 +19,7 @@ console.log('Health check route configured at /health');
 // Test routes
 app.use('/api/repo', repoRoutes);
 console.log('Repo routes configured at /api/repo');
+
+app.use('/api/file', fileRoutes);
 
 export default app;
