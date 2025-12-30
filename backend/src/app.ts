@@ -2,6 +2,8 @@ import express, { Application } from 'express';
 import repoRoutes from './api/repo';
 import cors from 'cors';
 import fileRoutes from './api/file';
+import parseRoutes from './api/parse';
+import graphRoutes from './api/graph';
 
 const app: Application = express();
 
@@ -21,5 +23,7 @@ app.use('/api/repo', repoRoutes);
 console.log('Repo routes configured at /api/repo');
 
 app.use('/api/file', fileRoutes);
+app.use('/api/parse', parseRoutes);
+app.use('/api/graph', graphRoutes);
 
 export default app;
