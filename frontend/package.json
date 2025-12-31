@@ -11,7 +11,10 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
+    "@xyflow/react": "^12.10.0",
     "axios": "^1.13.2",
+    "dom-to-image-more": "^3.7.2",
+    "html-to-image": "^1.11.13",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.11.0",

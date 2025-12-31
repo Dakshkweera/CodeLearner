@@ -5,13 +5,19 @@ import type {
   ApiError,
 } from '../../../shared/types';
 
+
 class GraphService {
   /**
    * Clone a GitHub repository
+   * ✅ UPDATED: Now accepts optional folder parameter
    */
-    async cloneRepository(repoUrl: string): Promise<CloneRepoResponse> {
+  async cloneRepository(repoUrl: string, folder?: string): Promise<CloneRepoResponse> {
     try {
-      const response = await apiClient.post('/api/repo/clone', { repoUrl });
+      // ✅ Send folder in request body
+      const response = await apiClient.post('/api/repo/clone', { 
+        repoUrl,
+        folder: folder || undefined // Only send if provided
+      });
       
       // Backend returns: { message: '...', data: { owner, name, url, ... } }
       // Transform to expected format
@@ -35,13 +41,20 @@ class GraphService {
     }
   }
 
+
   /**
    * Get dependency graph for a repository
+   * ✅ UPDATED: Now accepts optional folder parameter
    */
-  async getGraph(owner: string, name: string): Promise<GraphResponse> {
+  async getGraph(owner: string, name: string, folder?: string): Promise<GraphResponse> {
     try {
+      // ✅ Include folder in query params if provided
       const response = await apiClient.get<GraphResponse>('/api/graph', {
-        params: { owner, name },
+        params: { 
+          owner, 
+          name,
+          ...(folder && { folder }) // Only add folder param if it exists
+        },
       });
       return response.data;
     } catch (error) {
@@ -49,6 +62,7 @@ class GraphService {
       throw new Error(apiError.message);
     }
   }
+
 
   /**
    * Parse GitHub URL to extract owner and repo name
@@ -60,6 +74,7 @@ class GraphService {
     const regex = /github\.com\/([^\/]+)\/([^\/\.]+)(\.git)?$/;
     const match = url.match(regex);
 
+
     if (match) {
       return {
         owner: match[1],
@@ -67,8 +82,10 @@ class GraphService {
       };
     }
 
+
     return null;
   }
+
 
   /**
    * Validate GitHub URL format
@@ -77,6 +94,7 @@ class GraphService {
     return this.parseGitHubUrl(url) !== null;
   }
 }
+
 
 // Export singleton instance
 export default new GraphService();

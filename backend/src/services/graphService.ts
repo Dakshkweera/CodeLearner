@@ -4,22 +4,33 @@ import parseService from './parseService';
 import repoService from './repoService';
 import { FileNode, FileEdge, FileGraph, ImportStatement } from '../models';
 
+
 class GraphService {
   /**
    * Recursively find all JS/TS files in a directory
+   * ✅ UPDATED: Now accepts optional folder parameter
    */
   private async findJSTSFiles(
     dirPath: string,
-    basePath: string
+    basePath: string,
+    folder?: string
   ): Promise<string[]> {
     const files: string[] = [];
     
     try {
       const entries = await fs.readdir(dirPath, { withFileTypes: true });
 
+
       for (const entry of entries) {
         const fullPath = path.join(dirPath, entry.name);
-        const relativePath = path.relative(basePath, fullPath);
+        let relativePath = path.relative(basePath, fullPath);
+
+        // ✅ FIXED: Don't prepend if already contains folder
+        if (folder && !relativePath.startsWith(folder)) {
+            relativePath = path.join(folder, relativePath);
+        }
+
+
 
         // Skip node_modules, .git, dist, build folders
         if (
@@ -33,9 +44,10 @@ class GraphService {
           continue;
         }
 
+
         if (entry.isDirectory()) {
           // Recursively search subdirectories
-          const subFiles = await this.findJSTSFiles(fullPath, basePath);
+          const subFiles = await this.findJSTSFiles(fullPath, basePath, folder);
           files.push(...subFiles);
         } else if (entry.isFile() && parseService.shouldParse(entry.name)) {
           // Add JS/TS files
@@ -46,8 +58,10 @@ class GraphService {
       console.error(`Error reading directory ${dirPath}:`, error.message);
     }
 
+
     return files;
   }
+
 
   /**
    * Resolve relative import path to actual file path
@@ -61,6 +75,7 @@ class GraphService {
     if (!importedPath.startsWith('.') && !importedPath.startsWith('/')) {
       return null; // External dependency
     }
+
 
     // Get directory of the importing file
     const importerDir = path.dirname(importerPath);
@@ -86,21 +101,39 @@ class GraphService {
       }
     }
 
+
     return null; // Could not resolve
   }
 
+
   /**
    * Build complete file dependency graph for a repository
+   * ✅ UPDATED: Now accepts optional folder parameter
    */
-  public async buildGraph(owner: string, name: string): Promise<FileGraph> {
-    console.log(`Building graph for ${owner}/${name}...`);
-    
-    const repoPath = repoService.getRepoPath(owner, name);
-    
-    // Step 1: Find all JS/TS files
-    console.log('Finding all JS/TS files...');
-    const allFiles = await this.findJSTSFiles(repoPath, repoPath);
-    console.log(`Found ${allFiles.length} JS/TS files`);
+  public async buildGraph(owner: string, name: string, folder?: string): Promise<FileGraph> {
+  console.log(`Building graph for ${owner}/${name}${folder ? ` (folder: /${folder})` : ''}...`);
+  
+  const repoPath = repoService.getRepoPath(owner, name);
+
+  // ✅ FIXED: Separate analyze path and base path
+  const analyzePath = folder ? path.join(repoPath, folder) : repoPath;
+  const basePath = repoPath; // Always use repo root as base for relative paths
+
+  // ✅ NEW: Check if folder exists
+  if (folder) {
+    try {
+      await fs.access(analyzePath);
+      console.log(`✅ Analyzing folder: /${folder}`);
+    } catch {
+      throw new Error(`Folder "${folder}" not found in repository`);
+    }
+  }
+  
+  // Step 1: Find all JS/TS files
+  console.log('Finding all JS/TS files...');
+  const allFiles = await this.findJSTSFiles(analyzePath, basePath, folder);
+console.log(`Found ${allFiles.length} JS/TS files${folder ? ` in /${folder}` : ''}`);
+
 
     // Step 2: Create nodes for all files
     const nodes: FileNode[] = allFiles.map(filePath => ({
@@ -112,10 +145,12 @@ class GraphService {
         : 'javascript',
     }));
 
+
     // Step 3: Parse each file and build edges
     console.log('Parsing files and extracting imports...');
     const edges: FileEdge[] = [];
     let edgeIdCounter = 0;
+
 
     for (const filePath of allFiles) {
       try {
@@ -128,6 +163,7 @@ class GraphService {
           content
         );
 
+
         // Create edges for each import
         for (const imp of imports) {
           const resolvedPath = this.resolveImportPath(
@@ -135,6 +171,7 @@ class GraphService {
             imp.importedPath,
             allFiles
           );
+
 
           if (resolvedPath) {
             // Only add edge if we can resolve to a file in the repo
@@ -151,10 +188,42 @@ class GraphService {
       }
     }
 
+
     console.log(`Built graph: ${nodes.length} nodes, ${edges.length} edges`);
 
-    return { nodes, edges };
+
+    // STEP 4: Group nodes by folder
+    const folderGroups = new Map<string, string[]>();
+    
+    allFiles.forEach(filePath => {
+      const folder = filePath.includes('/') 
+        ? filePath.substring(0, filePath.lastIndexOf('/'))
+        : 'root';
+      
+      if (!folderGroups.has(folder)) {
+        folderGroups.set(folder, []);
+      }
+      
+      folderGroups.get(folder)!.push(filePath);
+    });
+
+
+    // Convert Map to array for JSON response
+    const folderGroupsArray = Array.from(folderGroups.entries()).map(([path, fileIds]) => ({
+      id: path,
+      name: path.split('/').pop() || 'root',
+      path: path,
+      fileIds: fileIds
+    }));
+
+
+    return { 
+      nodes, 
+      edges,
+      folderGroups: folderGroupsArray 
+    };
   }
 }
+
 
 export default new GraphService();

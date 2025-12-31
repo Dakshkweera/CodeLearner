@@ -12,9 +12,17 @@ export interface FileEdge {
   importType: 'import' | 'require' | 'dynamic';
 }
 
+export interface FolderGroup {
+  id: string;
+  name: string;
+  path: string;
+  fileIds: string[];
+}
+
 export interface FileGraph {
   nodes: FileNode[];
   edges: FileEdge[];
+  folderGroups?: FolderGroup[];
 }
 
 export interface ImportStatement {

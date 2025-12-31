@@ -1,3 +1,4 @@
+
 import { useCallback, useEffect, useState } from 'react';
 import ReactFlow, {
   type Node,
@@ -9,16 +10,17 @@ import ReactFlow, {
   ConnectionLineType,
   Handle,
   Position,
+  useReactFlow,
+  ReactFlowProvider,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useAppStore } from '../../../shared/store/appStore';
-
+import { toPng } from 'html-to-image';
 
 
 // Custom Node Component with Focus Button and HANDLES
 const CustomNode = ({ data }: any) => {
   const [isHovered, setIsHovered] = useState(false);
-
 
 
   return (
@@ -38,10 +40,9 @@ const CustomNode = ({ data }: any) => {
       <div style={{ padding: '4px' }}>{data.label}</div>
 
 
-
       {/* Tooltip - appears on hover */}
       {isHovered && (
-        <div className="absolute -top-24 left-1/2 transform -translate-x-1/2 bg-gray-900 border-2 border-gray-600 rounded-lg shadow-2xl px-3 py-2 z-50 w-64 pointer-events-none">
+        <div className="absolute -top-28 left-1/2 transform -translate-x-1/2 bg-gray-900 border-2 border-gray-600 rounded-lg shadow-2xl px-3 py-2 z-50 w-64 pointer-events-none">
           <div className="text-xs space-y-1">
             <p className="text-white font-bold truncate">{data.label}</p>
             <p className="text-gray-400 text-[10px] truncate">📁 {data.path}</p>
@@ -50,10 +51,12 @@ const CustomNode = ({ data }: any) => {
               <span className="text-blue-400">📥 {data.importance} imports</span>
             </div>
             <p className="text-yellow-300 text-[10px] capitalize">⭐ {data.role}</p>
+            <p className="text-purple-400 text-[10px] truncate mt-1 pt-1 border-t border-gray-700">
+              📂 Folder: {data.path.includes('/') ? data.path.substring(0, data.path.lastIndexOf('/')) : 'root'}
+            </p>
           </div>
         </div>
       )}
-
 
 
       {/* Focus Button - appears on hover */}
@@ -71,7 +74,6 @@ const CustomNode = ({ data }: any) => {
       )}
 
 
-
       <Handle
         type="source"
         position={Position.Bottom}
@@ -82,31 +84,28 @@ const CustomNode = ({ data }: any) => {
 };
 
 
-
 // Register custom node types
 const nodeTypes = {
   custom: CustomNode,
 };
 
 
-
-const GraphPanel = () => {
+const GraphPanelContent = () => {
   const { graphData, setSelectedFile, setLoading, setError } = useAppStore();
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
+  const { fitView } = useReactFlow();
 
 
-
-  // Build and layout graph
+  // Build and layout graph - ONLY runs when graphData/search/focus changes
   useEffect(() => {
     if (!graphData) {
       setNodes([]);
       setEdges([]);
       return;
     }
-
 
 
     // STEP 1: Filter out isolated nodes
@@ -117,11 +116,9 @@ const GraphPanel = () => {
     });
 
 
-
     const connectedNodes = graphData.nodes.filter((node) =>
       connectedNodeIds.has(node.id)
     );
-
 
 
     // STEP 2: Calculate importance
@@ -129,7 +126,6 @@ const GraphPanel = () => {
     graphData.edges.forEach((edge) => {
       importanceMap.set(edge.target, (importanceMap.get(edge.target) || 0) + 1);
     });
-
 
 
     // STEP 3: Detect file role
@@ -152,7 +148,6 @@ const GraphPanel = () => {
     };
 
 
-
     // STEP 4: Get color
     const getNodeColor = (role: string, language: string): string => {
       if (role === 'entry') return '#10b981';
@@ -163,14 +158,14 @@ const GraphPanel = () => {
     };
 
 
-
-    // STEP 5: Calculate node size
-    const getNodeSize = (importance: number): number => {
-      const baseWidth = 160;
-      const importanceBonus = Math.min(importance * 15, 60);
-      return baseWidth + importanceBonus;
+    // STEP 5: Calculate node size based on filename length
+    const getNodeSize = (filename: string, importance: number): number => {
+      const charWidth = 8;
+      const padding = 40;
+      const filenameWidth = filename.length * charWidth + padding;
+      const importanceBonus = Math.min(importance * 10, 40);
+      return Math.min(Math.max(filenameWidth + importanceBonus, 140), 300);
     };
-
 
 
     // STEP 6: Find root nodes
@@ -179,7 +174,6 @@ const GraphPanel = () => {
       const importsOthers = graphData.edges.some((e) => e.source === node.id);
       return role === 'entry' || !importsOthers;
     });
-
 
 
     if (rootNodes.length === 0 && connectedNodes.length > 0) {
@@ -192,12 +186,10 @@ const GraphPanel = () => {
     }
 
 
-
     // STEP 7: Assign levels using BFS
     const levels = new Map<string, number>();
     const processed = new Set<string>();
     const queue: Array<{ nodeId: string; level: number }> = [];
-
 
 
     rootNodes.forEach((node) => {
@@ -206,18 +198,15 @@ const GraphPanel = () => {
     });
 
 
-
     while (queue.length > 0) {
       const { nodeId, level } = queue.shift()!;
       if (processed.has(nodeId)) continue;
       processed.add(nodeId);
 
 
-
       const children = graphData.edges
         .filter((e) => e.source === nodeId)
         .map((e) => e.target);
-
 
 
       children.forEach((childId) => {
@@ -229,13 +218,11 @@ const GraphPanel = () => {
     }
 
 
-
     connectedNodes.forEach((node) => {
       if (!levels.has(node.id)) {
         levels.set(node.id, 0);
       }
     });
-
 
 
     // STEP 8: Group nodes by level
@@ -246,7 +233,6 @@ const GraphPanel = () => {
       }
       nodesByLevel.get(level)!.push(nodeId);
     });
-
 
 
     // STEP 9: Focus Mode - visible nodes
@@ -265,7 +251,6 @@ const GraphPanel = () => {
     }
 
 
-
     // STEP 10: Search matches
     const searchMatches = new Set<string>();
     if (searchTerm) {
@@ -277,37 +262,114 @@ const GraphPanel = () => {
     }
 
 
+    // STEP 11: FORCE-DIRECTED WEB LAYOUT
+const nodePositions = new Map<string, { x: number; y: number }>();
 
-    // STEP 11: Create nodes
-    const horizontalSpacing = 250;
-    const verticalSpacing = 120;
+// Step 1: Initialize random positions for all nodes
+connectedNodes.forEach((node, index) => {
+  const angle = (index / connectedNodes.length) * 2 * Math.PI;
+  const radius = 400;
+  nodePositions.set(node.id, {
+    x: Math.cos(angle) * radius + (Math.random() - 0.5) * 100,
+    y: Math.sin(angle) * radius + (Math.random() - 0.5) * 100,
+  });
+});
+
+// Step 2: Run force simulation (simplified)
+const iterations = 150; // Number of simulation steps
+const repulsionForce = 15000; // How much nodes push each other away
+const attractionForce = 0.005; // How much connected nodes pull together
+const damping = 0.85; // Friction/stabilization
+
+for (let iter = 0; iter < iterations; iter++) {
+  const forces = new Map<string, { x: number; y: number }>();
+  
+  // Initialize forces
+  connectedNodes.forEach(node => {
+    forces.set(node.id, { x: 0, y: 0 });
+  });
+
+  // Repulsion: All nodes push each other away
+  connectedNodes.forEach(nodeA => {
+    connectedNodes.forEach(nodeB => {
+      if (nodeA.id === nodeB.id) return;
+      
+      const posA = nodePositions.get(nodeA.id)!;
+      const posB = nodePositions.get(nodeB.id)!;
+      
+      const dx = posA.x - posB.x;
+      const dy = posA.y - posB.y;
+      const distance = Math.sqrt(dx * dx + dy * dy) || 1;
+      
+      const force = repulsionForce / (distance * distance);
+      const fx = (dx / distance) * force;
+      const fy = (dy / distance) * force;
+      
+      const currentForce = forces.get(nodeA.id)!;
+      forces.set(nodeA.id, {
+        x: currentForce.x + fx,
+        y: currentForce.y + fy,
+      });
+    });
+  });
+
+  // Attraction: Connected nodes pull each other closer
+  graphData.edges.forEach(edge => {
+    const posSource = nodePositions.get(edge.source);
+    const posTarget = nodePositions.get(edge.target);
+    
+    if (!posSource || !posTarget) return;
+    
+    const dx = posTarget.x - posSource.x;
+    const dy = posTarget.y - posSource.y;
+    const distance = Math.sqrt(dx * dx + dy * dy) || 1;
+    
+    const force = distance * attractionForce;
+    const fx = (dx / distance) * force;
+    const fy = (dy / distance) * force;
+    
+    // Apply to source
+    const forceSource = forces.get(edge.source)!;
+    forces.set(edge.source, {
+      x: forceSource.x + fx,
+      y: forceSource.y + fy,
+    });
+    
+    // Apply opposite to target
+    const forceTarget = forces.get(edge.target)!;
+    forces.set(edge.target, {
+      x: forceTarget.x - fx,
+      y: forceTarget.y - fy,
+    });
+  });
+
+  // Update positions with damping
+  connectedNodes.forEach(node => {
+    const pos = nodePositions.get(node.id)!;
+    const force = forces.get(node.id)!;
+    
+    nodePositions.set(node.id, {
+      x: pos.x + force.x * damping,
+      y: pos.y + force.y * damping,
+    });
+  });
+}
 
 
 
     const flowNodes: Node[] = connectedNodes.map((node) => {
-      const level = levels.get(node.id) ?? 0;
-      const nodesAtLevel = nodesByLevel.get(level) ?? [];
-      const indexAtLevel = nodesAtLevel.indexOf(node.id);
-      const totalAtLevel = nodesAtLevel.length;
-
-
-
       const importance = importanceMap.get(node.id) || 0;
       const role = getNodeRole(node.path);
-      const nodeWidth = getNodeSize(importance);
+      const nodeWidth = getNodeSize(node.label, importance);
       const nodeColor = getNodeColor(role, node.language);
 
 
-
-      const totalWidth = totalAtLevel * horizontalSpacing;
-      const startX = -totalWidth / 2;
-
+      const position = nodePositions.get(node.id) || { x: 0, y: 0 };
 
 
       let opacity = 1;
       let borderColor = '#555';
       let borderWidth = 2;
-
 
 
       if (focusedNodeId) {
@@ -332,7 +394,6 @@ const GraphPanel = () => {
       }
 
 
-
       return {
         id: node.id,
         type: 'custom',
@@ -344,10 +405,7 @@ const GraphPanel = () => {
           importance,
           onFocus: () => setFocusedNodeId(node.id),
         },
-        position: {
-          x: startX + indexAtLevel * horizontalSpacing,
-          y: level * verticalSpacing,
-        },
+        position: position,
         style: {
           background: nodeColor,
           color: ['entry', 'route', 'middleware', 'utility'].includes(role) || node.language === 'typescript' ? '#fff' : '#000',
@@ -377,8 +435,6 @@ const GraphPanel = () => {
         let opacity = 0.6;
 
 
-
-        // Focus mode
         if (focusedNodeId) {
           const isConnected =
             visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target);
@@ -393,12 +449,9 @@ const GraphPanel = () => {
         }
 
 
-
-        // Search mode
         if (searchTerm && searchMatches.size > 0) {
           opacity = 0.3;
         }
-
 
 
         return {
@@ -422,11 +475,42 @@ const GraphPanel = () => {
       });
 
 
-
     setNodes(flowNodes);
     setEdges(flowEdges);
   }, [graphData, setNodes, setEdges, searchTerm, focusedNodeId]);
 
+
+  // Export handler with high quality
+  const handleExport = useCallback(async () => {
+    try {
+      fitView({ padding: 0.1, duration: 200 });
+      await new Promise(resolve => setTimeout(resolve, 400));
+      
+      const viewportElement = document.querySelector('.react-flow__viewport') as HTMLElement;
+      if (!viewportElement) {
+        alert('Graph element not found');
+        return;
+      }
+
+
+      const dataUrl = await toPng(viewportElement, {
+        backgroundColor: '#1f2937',
+        quality: 1,
+        pixelRatio: 4,
+        cacheBust: true,
+      });
+
+
+      const link = document.createElement('a');
+      const repo = useAppStore.getState().repository;
+      link.download = `${repo?.name || 'graph'}-dependency-graph.png`;
+      link.href = dataUrl;
+      link.click();
+    } catch (error) {
+      console.error('Export failed:', error);
+      alert('Export failed. Please try again.');
+    }
+  }, [fitView]);
 
 
   // Handle SINGLE CLICK - View code
@@ -436,15 +520,12 @@ const GraphPanel = () => {
       const repo = useAppStore.getState().repository;
 
 
-
       if (!repo || !filePath) return;
-
 
 
       try {
         setLoading({ loadingFile: true });
         setError(null);
-
 
 
         const { fileService } = await import('../../codeViewer');
@@ -455,13 +536,11 @@ const GraphPanel = () => {
         );
 
 
-
         setSelectedFile({
           path: filePath,
           content: fileData.content,
           language: fileService.detectLanguage(filePath),
         });
-
 
 
         setLoading({ loadingFile: false });
@@ -472,7 +551,6 @@ const GraphPanel = () => {
     },
     [setSelectedFile, setLoading, setError]
   );
-
 
 
   // Empty state
@@ -490,11 +568,10 @@ const GraphPanel = () => {
   }
 
 
-
   return (
     <div className="w-full h-full bg-gray-800 relative">
-      {/* Search Bar */}
-      <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-10">
+      {/* Search Bar & Export Button */}
+      <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-10 flex items-center space-x-3">
         <div className="bg-gray-900 border-2 border-gray-700 rounded-lg shadow-lg px-4 py-2 flex items-center space-x-2">
           <svg
             className="w-5 h-5 text-gray-400"
@@ -525,8 +602,20 @@ const GraphPanel = () => {
             </button>
           )}
         </div>
-      </div>
 
+
+        {/* Export Button */}
+        <button
+          onClick={handleExport}
+          className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg shadow-lg flex items-center space-x-2 transition-colors"
+          title="Export full graph as high-quality PNG"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+          <span className="text-sm font-semibold">Export</span>
+        </button>
+      </div>
 
 
       {/* Focus Mode Banner */}
@@ -551,7 +640,6 @@ const GraphPanel = () => {
           </div>
         </div>
       )}
-
 
 
       {/* Legend */}
@@ -583,10 +671,9 @@ const GraphPanel = () => {
           <p className="text-xs text-yellow-400 font-bold mb-1">💡 Controls:</p>
           <p className="text-xs text-gray-300">• Click node = View code</p>
           <p className="text-xs text-gray-300">• Hover + click 🎯 = Focus</p>
-          <p className="text-xs text-gray-300">• Blue edges = Connections</p>
+          <p className="text-xs text-gray-300">• Hover = See folder path</p>
         </div>
       </div>
-
 
 
       {/* React Flow Graph */}
@@ -608,6 +695,15 @@ const GraphPanel = () => {
   );
 };
 
+
+// Wrap with ReactFlowProvider to enable useReactFlow hook
+const GraphPanel = () => {
+  return (
+    <ReactFlowProvider>
+      <GraphPanelContent />
+    </ReactFlowProvider>
+  );
+};
 
 
 export default GraphPanel;

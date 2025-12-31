@@ -4,17 +4,21 @@ import fs from 'fs/promises';
 import { config } from '../config';
 import { RepoInfo, CloneResult } from '../models';
 
+
 console.log('Loading repoService...');
 console.log('Temp repo path:', config.repo.tempPath);
+
 
 class RepoService {
   private git: SimpleGit;
   private tempRepoPath: string;
 
+
   constructor() {
     this.git = simpleGit();
     this.tempRepoPath = config.repo.tempPath;
   }
+
 
   /**
    * Parse GitHub URL to extract owner and repo name
@@ -40,6 +44,7 @@ class RepoService {
     return null;
   }
 
+
   /**
    * Validate if the URL is a valid GitHub repository URL
    */
@@ -47,10 +52,12 @@ class RepoService {
     return this.parseGitHubUrl(url) !== null;
   }
 
+
   /**
    * Clone a GitHub repository to local temp directory
+   * ✅ UPDATED: Now accepts optional folder parameter
    */
-  public async cloneRepo(repoUrl: string): Promise<CloneResult> {
+  public async cloneRepo(repoUrl: string, folder?: string): Promise<CloneResult> {
     try {
       // Validate URL
       const parsed = this.parseGitHubUrl(repoUrl);
@@ -61,13 +68,29 @@ class RepoService {
         };
       }
 
+
       const { owner, name } = parsed;
       const localPath = path.join(this.tempRepoPath, owner, name);
+
 
       // Check if repo already exists
       const exists = await this.repoExists(localPath);
       if (exists) {
         console.log(`Repository already exists at: ${localPath}`);
+        
+        // ✅ NEW: Validate folder exists if specified
+        if (folder) {
+          const folderPath = path.join(localPath, folder);
+          const folderExists = await this.repoExists(folderPath);
+          if (!folderExists) {
+            return {
+              success: false,
+              error: `Folder "${folder}" not found in repository`,
+            };
+          }
+          console.log(`✅ Folder /${folder} exists`);
+        }
+        
         return {
           success: true,
           repoInfo: {
@@ -80,13 +103,30 @@ class RepoService {
         };
       }
 
+
       // Ensure temp directory exists
       await fs.mkdir(path.dirname(localPath), { recursive: true });
 
+
       // Clone the repository
-      console.log(`Cloning repository: ${repoUrl}`);
+      console.log(`Cloning repository: ${repoUrl}${folder ? ` (will analyze /${folder})` : ''}`);
       await this.git.clone(repoUrl, localPath);
       console.log(`Successfully cloned to: ${localPath}`);
+
+
+      // ✅ NEW: Validate folder exists after cloning
+      if (folder) {
+        const folderPath = path.join(localPath, folder);
+        const folderExists = await this.repoExists(folderPath);
+        if (!folderExists) {
+          return {
+            success: false,
+            error: `Folder "${folder}" not found in cloned repository`,
+          };
+        }
+        console.log(`✅ Folder /${folder} verified`);
+      }
+
 
       return {
         success: true,
@@ -107,6 +147,7 @@ class RepoService {
     }
   }
 
+
   /**
    * Check if repository exists locally
    */
@@ -119,12 +160,14 @@ class RepoService {
     }
   }
 
+
   /**
    * Get local path for a repository
    */
   public getRepoPath(owner: string, name: string): string {
     return path.join(this.tempRepoPath, owner, name);
   }
+
 
   /**
    * Delete a cloned repository
@@ -141,6 +184,7 @@ class RepoService {
     }
   }
 
+
   /**
    * Clean up all repositories in temp directory
    */
@@ -154,5 +198,6 @@ class RepoService {
     }
   }
 }
+
 
 export default new RepoService();
