@@ -1,18 +1,30 @@
+import Header from './shared/components/Header';
+import ErrorMessage from './shared/components/ErrorMessage';
+import GraphPanel from './features/graph/components/GraphPanel';
+import CodePanel from './features/codeViewer/components/CodePanel';
+import { useAppStore } from './shared/store/appStore';
+
 function App() {
+  const { error, selectedFile } = useAppStore();
+
   return (
-    <div className="min-h-screen bg-gray-900 flex items-center justify-center">
-      <div className="text-center">
-        <h1 className="text-4xl font-bold text-blue-500 mb-4">
-          CodeLearner Frontend
-        </h1>
-        <p className="text-gray-300 text-lg">
-          Tailwind CSS is working! ✅
-        </p>
-        <div className="mt-6 p-4 bg-gray-800 rounded-lg border border-gray-700">
-          <p className="text-green-400 font-mono">
-            All systems ready for Phase 1
-          </p>
+    <div className="h-screen flex flex-col bg-gray-900">
+      {/* Header */}
+      <Header />
+
+      {/* Error Message */}
+      {error && (
+        <div className="px-6 pt-4">
+          <ErrorMessage />
         </div>
+      )}
+
+      {/* Full Screen Graph */}
+      <div className="flex-1 overflow-hidden relative">
+        <GraphPanel />
+
+        {/* Code Overlay Panel - appears on top when node is clicked */}
+        {selectedFile && <CodePanel />}
       </div>
     </div>
   );
