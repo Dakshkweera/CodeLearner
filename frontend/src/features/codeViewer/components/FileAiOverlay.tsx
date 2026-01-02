@@ -10,8 +10,7 @@ type AiMessage = {
   content: string;
 };
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5002';
-
+const API_BASE = import.meta.env.VITE_API_URL as string;
 
 interface FileAiOverlayProps {
   file: {
@@ -23,6 +22,8 @@ interface FileAiOverlayProps {
   repoName: string;
   onClose: () => void;
 }
+
+const MAX_AI_QUESTIONS = 10;
 
 const FileAiOverlay: React.FC<FileAiOverlayProps> = ({
   file,
@@ -36,12 +37,42 @@ const FileAiOverlay: React.FC<FileAiOverlayProps> = ({
 
   const [fontSize, setFontSize] = useState(14);
 
+  // Track how many AI calls have been used (lifetime for this user)
+  const [aiUsed, setAiUsed] = useState<number>(() => {
+    const savedUser = localStorage.getItem('codelearnerUser');
+    if (!savedUser) return 0;
+    try {
+      const parsed = JSON.parse(savedUser);
+      return typeof parsed.aiQuestionsUsed === 'number' ? parsed.aiQuestionsUsed : 0;
+    } catch {
+      return 0;
+    }
+  });
+
+  const [quotaError, setQuotaError] = useState<string | null>(null);
+
   const increaseFont = () => setFontSize(f => Math.min(f + 1, 24));
   const decreaseFont = () => setFontSize(f => Math.max(f - 1, 10));
 
   const handleAsk = async () => {
     const trimmed = question.trim();
     if (!trimmed) return;
+
+    // If quota already reached, block and show message
+    if (aiUsed >= MAX_AI_QUESTIONS) {
+      setQuotaError(
+        `You have used all ${MAX_AI_QUESTIONS} AI questions for this account.`
+      );
+      return;
+    }
+
+    const token = localStorage.getItem('codelearnerToken');
+    if (!token) {
+      setQuotaError('You must be logged in to use AI.');
+      return;
+    }
+
+    setQuotaError(null);
 
     const newHistory: AiMessage[] = [...history, { role: 'user', content: trimmed }];
     setHistory(newHistory);
@@ -53,6 +84,7 @@ const FileAiOverlay: React.FC<FileAiOverlayProps> = ({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           owner,
@@ -64,11 +96,46 @@ const FileAiOverlay: React.FC<FileAiOverlayProps> = ({
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
+        const errorData = await response.json().catch(() => ({} as any));
+
+        // Handle quota exhausted from backend
+        if (response.status === 429) {
+          const msg =
+            errorData.message ||
+            errorData.error ||
+            `You have used all ${MAX_AI_QUESTIONS} AI questions for this account.`;
+          setQuotaError(msg);
+          // Append assistant message explaining quota
+          setHistory([
+            ...newHistory,
+            {
+              role: 'assistant',
+              content: `⚠️ ${msg}`,
+            },
+          ]);
+          return;
+        }
+
         throw new Error(errorData.error || 'Failed to get AI response');
       }
 
       const data = await response.json();
+
+      // On success, backend already incremented ai_questions_used.
+      // Locally increment aiUsed and also update stored user object if present.
+      const newUsed = aiUsed + 1;
+      setAiUsed(newUsed);
+
+      const storedUser = localStorage.getItem('codelearnerUser');
+      if (storedUser) {
+        try {
+          const parsed = JSON.parse(storedUser);
+          const updated = { ...parsed, aiQuestionsUsed: newUsed };
+          localStorage.setItem('codelearnerUser', JSON.stringify(updated));
+        } catch {
+          // ignore JSON errors
+        }
+      }
 
       setHistory([
         ...newHistory,
@@ -163,6 +230,8 @@ const FileAiOverlay: React.FC<FileAiOverlayProps> = ({
     },
   };
 
+  const remaining = Math.max(0, MAX_AI_QUESTIONS - aiUsed);
+
   return (
     <div className="fixed inset-0 z-40 bg-black bg-opacity-80 flex flex-col">
       {/* Top bar */}
@@ -174,7 +243,22 @@ const FileAiOverlay: React.FC<FileAiOverlayProps> = ({
           </span>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-6">
+          {/* AI usage indicator */}
+          <div className="flex flex-col items-end text-xs">
+            <span className="text-gray-300">
+              AI questions used:{' '}
+              <span className="font-semibold text-blue-400">
+                {aiUsed}/{MAX_AI_QUESTIONS}
+              </span>
+            </span>
+            {quotaError && (
+              <span className="text-red-400">
+                {quotaError}
+              </span>
+            )}
+          </div>
+
           <div className="flex items-center gap-1 text-xs text-gray-300">
             <span>Font</span>
             <button
@@ -276,15 +360,19 @@ const FileAiOverlay: React.FC<FileAiOverlayProps> = ({
               <textarea
                 rows={2}
                 className="flex-1 bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-sm text-gray-100 resize-none focus:outline-none focus:ring-1 focus:ring-blue-500"
-                placeholder="Ask AI about this file… (Press Enter to send, Shift+Enter for new line)"
+                placeholder={
+                  remaining > 0
+                    ? `Ask AI about this file… (${remaining} questions left)`
+                    : 'AI quota exhausted for this account.'
+                }
                 value={question}
                 onChange={e => setQuestion(e.target.value)}
                 onKeyDown={handleKeyDown}
-                disabled={loading}
+                disabled={loading || remaining <= 0}
               />
               <button
                 onClick={handleAsk}
-                disabled={loading || !question.trim()}
+                disabled={loading || !question.trim() || remaining <= 0}
                 className="bg-blue-600 hover:bg-blue-500 disabled:bg-blue-900 disabled:cursor-not-allowed text-white text-sm font-medium px-4 py-2 rounded-md h-10 self-stretch transition-colors"
               >
                 {loading ? 'Asking…' : 'Ask'}

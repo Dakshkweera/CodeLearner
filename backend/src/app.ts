@@ -6,6 +6,7 @@ import parseRoutes from './api/parse';
 import graphRoutes from './api/graph';
 import ragRoutes from './api/rag';
 import aiRoutes from './api/ai';
+import authRoutes from './api/auth';
 
 const app: Application = express();
 
@@ -29,5 +30,6 @@ app.use('/api/parse', parseRoutes);
 app.use('/api/graph', graphRoutes);
 app.use('/api/rag', ragRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/auth', authRoutes);
 
 export default app;

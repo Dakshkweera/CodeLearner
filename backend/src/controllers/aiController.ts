@@ -1,6 +1,9 @@
-import { Request, Response } from 'express';
+import { Response } from 'express';
 import chatService from '../services/chatService';
-// import fileService from '../services/fileService';
+import dbService from '../services/dbService';
+import { AuthRequest } from '../middleware/authMiddleware';
+
+const pool = dbService.getPool();
 
 interface FileChatRequest {
   owner: string;
@@ -10,7 +13,7 @@ interface FileChatRequest {
   history: Array<{ role: 'user' | 'assistant'; content: string }>;
 }
 
-export const askFileQuestion = async (req: Request, res: Response) => {
+export const askFileQuestion = async (req: AuthRequest, res: Response) => {
   try {
     const { owner, name, path, question, history } = req.body as FileChatRequest;
 
@@ -44,6 +47,17 @@ export const askFileQuestion = async (req: Request, res: Response) => {
       question,
       history || []
     );
+
+    // Increment user's AI usage (lifetime counter)
+    if (req.user) {
+      await pool.query(
+        `UPDATE users
+         SET ai_questions_used = ai_questions_used + 1,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [req.user.userId]
+      );
+    }
 
     return res.status(200).json({
       answer,
