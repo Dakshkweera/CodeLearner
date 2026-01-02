@@ -1,34 +1,53 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Editor from '@monaco-editor/react';
 import { useAppStore } from '../../../shared/store/appStore';
+import FileAiOverlay from './FileAiOverlay';
 
-const CodePanel = () => {
+interface CodePanelProps {
+  owner: string;
+  name: string;
+}
+
+const CodePanel: React.FC<CodePanelProps> = ({ owner, name }) => {
   const { selectedFile, setSelectedFile } = useAppStore();
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // Close panel when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (panelRef.current && !panelRef.current.contains(event.target as Node)) {
-        setSelectedFile(null);
-      }
-    };
+  const [isAiOpen, setIsAiOpen] = useState(false);
 
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [setSelectedFile]);
+  // Close panel when clicking outside (but NOT when AI overlay is open)
+useEffect(() => {
+  const handleClickOutside = (event: MouseEvent) => {
+    // If AI overlay is open, ignore outside clicks
+    if (isAiOpen) return;
+
+    if (panelRef.current && !panelRef.current.contains(event.target as Node)) {
+      setSelectedFile(null);
+      setIsAiOpen(false);
+    }
+  };
+
+  document.addEventListener('mousedown', handleClickOutside);
+  return () => document.removeEventListener('mousedown', handleClickOutside);
+}, [setSelectedFile, isAiOpen]);
 
   // Close on Escape key
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+useEffect(() => {
+  const handleEscape = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') {
+      if (isAiOpen) {
+        // First close AI overlay only
+        setIsAiOpen(false);
+      } else {
+        // If overlay not open, close the code panel
         setSelectedFile(null);
       }
-    };
+    }
+  };
 
-    document.addEventListener('keydown', handleEscape);
-    return () => document.removeEventListener('keydown', handleEscape);
-  }, [setSelectedFile]);
+  document.addEventListener('keydown', handleEscape);
+  return () => document.removeEventListener('keydown', handleEscape);
+}, [setSelectedFile, isAiOpen]);
+
 
   if (!selectedFile) return null;
 
@@ -55,7 +74,10 @@ const CodePanel = () => {
 
           {/* Close Button */}
           <button
-            onClick={() => setSelectedFile(null)}
+            onClick={() => {
+              setSelectedFile(null);
+              setIsAiOpen(false);
+            }}
             className="ml-4 text-gray-400 hover:text-white transition-colors"
           >
             <svg
@@ -94,20 +116,43 @@ const CodePanel = () => {
         </div>
 
         {/* Footer */}
-        <div className="bg-gray-800 px-6 py-3 border-t border-gray-700 flex items-center justify-between">
+        <div className="bg-gray-800 px-6 py-3 border-t border-gray-700 flex items-center justify-between gap-4">
           <p className="text-gray-500 text-sm">
-            Click outside or press <kbd className="px-2 py-1 bg-gray-700 rounded text-xs">ESC</kbd> to close
+            Click outside or press{' '}
+            <kbd className="px-2 py-1 bg-gray-700 rounded text-xs">ESC</kbd> to close
           </p>
-          <button
-            onClick={() => {
-              navigator.clipboard.writeText(selectedFile.content);
-            }}
-            className="text-blue-400 hover:text-blue-300 text-sm font-medium transition-colors"
-          >
-            Copy Code
-          </button>
+
+          <div className="flex items-center gap-3">
+            {/* Ask AI button */}
+            <button
+              onClick={() => setIsAiOpen(true)}
+              className="bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-3 py-1.5 rounded-md transition-colors"
+            >
+              Ask AI about this file
+            </button>
+
+            {/* Copy Code */}
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(selectedFile.content);
+              }}
+              className="text-blue-400 hover:text-blue-300 text-sm font-medium transition-colors"
+            >
+              Copy Code
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* Full-screen AI overlay */}
+      {isAiOpen && (
+        <FileAiOverlay
+          file={selectedFile}
+          owner={owner}
+          repoName={name}
+          onClose={() => setIsAiOpen(false)}
+        />
+      )}
     </>
   );
 };

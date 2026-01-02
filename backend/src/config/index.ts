@@ -12,6 +12,7 @@ export const config = {
     name: process.env.DB_NAME || 'codelearner',
     user: process.env.DB_USER || 'postgres',
     password: process.env.DB_PASSWORD || '',
+    url: process.env.DATABASE_URL || '',
   },
   
   repo: {
@@ -20,5 +21,7 @@ export const config = {
   
   ai: {
     perplexityApiKey: process.env.PERPLEXITY_API_KEY || '',
+    cohereApiKey: process.env.COHERE_API_KEY || '', // ✅ ADD THIS LINE
+    embeddingProvider: process.env.EMBEDDING_PROVIDER || 'cohere',
   },
 };

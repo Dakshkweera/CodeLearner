@@ -5,7 +5,7 @@ import CodePanel from './features/codeViewer/components/CodePanel';
 import { useAppStore } from './shared/store/appStore';
 
 function App() {
-  const { error, selectedFile } = useAppStore();
+  const { error, selectedFile, repository } = useAppStore();
 
   return (
     <div className="h-screen flex flex-col bg-gray-900">
@@ -24,7 +24,9 @@ function App() {
         <GraphPanel />
 
         {/* Code Overlay Panel - appears on top when node is clicked */}
-        {selectedFile && <CodePanel />}
+        {selectedFile && repository && (
+          <CodePanel owner={repository.owner} name={repository.name} />
+        )}
       </div>
     </div>
   );

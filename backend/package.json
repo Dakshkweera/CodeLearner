@@ -3,18 +3,20 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "dev": "nodemon src/server.ts",
-    "build": "tsc",
-    "start": "node dist/server.js"
-  },
+  "dev": "nodemon --watch src --ext ts,js,json --ignore ./temp --ignore ./temp/** --ignore dist --ignore logs src/server.ts",
+  "build": "tsc",
+  "start": "node dist/server.js"
+},
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "cohere-ai": "^7.20.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
+    "pg": "^8.16.3",
     "simple-git": "^3.28.0",
     "tree-sitter": "^0.21.1",
     "tree-sitter-javascript": "^0.21.4",
@@ -24,6 +26,7 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/node": "^24.10.4",
+    "@types/pg": "^8.16.0",
     "nodemon": "^3.1.10",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"

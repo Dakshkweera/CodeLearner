@@ -33,6 +33,29 @@ export class FileService {
     const content = await fs.readFile(fullPath, 'utf-8');
     return content;
   }
+  
+  /**
+ * Try to read README.md from repo root
+ * Returns content or null if not found
+ */
+public async readReadme(owner: string, name: string): Promise<string | null> {
+  const repoRoot = repoService.getRepoPath(owner, name);
+  const readmePaths = ['README.md', 'readme.md', 'Readme.md', 'README.MD'];
+  
+  for (const readmePath of readmePaths) {
+    try {
+      const fullPath = path.join(repoRoot, readmePath);
+      const content = await fs.readFile(fullPath, 'utf-8');
+      return content;
+    } catch {
+      // File doesn't exist, try next
+      continue;
+    }
+  }
+  
+  return null; // No README found
+}
+
 }
 
 const fileService = new FileService();

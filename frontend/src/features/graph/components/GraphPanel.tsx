@@ -268,17 +268,17 @@ const nodePositions = new Map<string, { x: number; y: number }>();
 // Step 1: Initialize random positions for all nodes
 connectedNodes.forEach((node, index) => {
   const angle = (index / connectedNodes.length) * 2 * Math.PI;
-  const radius = 400;
+  const radius = 600;
   nodePositions.set(node.id, {
-    x: Math.cos(angle) * radius + (Math.random() - 0.5) * 100,
-    y: Math.sin(angle) * radius + (Math.random() - 0.5) * 100,
+    x: Math.cos(angle) * radius + (Math.random() - 0.5) * 200,
+    y: Math.sin(angle) * radius + (Math.random() - 0.5) * 200,
   });
 });
 
 // Step 2: Run force simulation (simplified)
-const iterations = 150; // Number of simulation steps
-const repulsionForce = 15000; // How much nodes push each other away
-const attractionForce = 0.005; // How much connected nodes pull together
+const iterations = 180; // Number of simulation steps
+const repulsionForce = 30000; // How much nodes push each other away
+const attractionForce = 0.003; // How much connected nodes pull together
 const damping = 0.85; // Friction/stabilization
 
 for (let iter = 0; iter < iterations; iter++) {
