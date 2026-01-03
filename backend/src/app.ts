@@ -46,7 +46,6 @@ app.get('/health', (req, res) => {
 });
 console.log('Health check route configured at /health');
 
-// API routes
 app.use('/api/repo', repoRoutes);
 console.log('Repo routes configured at /api/repo');
 
