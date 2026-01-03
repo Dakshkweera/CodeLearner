@@ -3,7 +3,8 @@ import dbService from '../services/dbService';
 import authService from '../services/authService';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
-import { sendOtpEmail } from '../services/emailService';
+import { sendOtpEmail } from '../services/emailService'; // Gmail SMTP
+import { sendOtpEmailResend } from '../services/resendService'; // Resend
 
 const pool = dbService.getPool();
 
@@ -51,9 +52,9 @@ export const signup = async (req: Request, res: Response) => {
     // Hash password
     const passwordHash = await authService.hashPassword(password);
 
-    // Generate OTP & expiry (10 minutes)
+    // Generate OTP & expiry (30 minutes) ✅ EXTENDED FROM 10 TO 30 MINUTES
     const otp = generateOtp();
-    const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
+    const otpExpiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 min
 
     let userId: string;
 
@@ -82,11 +83,31 @@ export const signup = async (req: Request, res: Response) => {
       userId = update.rows[0].id;
     }
 
-    // Send OTP email
+    // ✅ SEND OTP EMAIL - TRY RESEND FIRST, FALLBACK TO GMAIL
     try {
-      await sendOtpEmail(trimmedEmail, otp);
+      // Check if Resend is configured
+      if (process.env.RESEND_API_KEY) {
+        console.log('📧 [SIGNUP] Sending OTP via Resend...');
+        await sendOtpEmailResend(trimmedEmail, otp);
+        console.log('✅ [SIGNUP] OTP sent via Resend successfully');
+      } else {
+        console.log('📧 [SIGNUP] Sending OTP via Gmail SMTP (Resend not configured)...');
+        await sendOtpEmail(trimmedEmail, otp);
+        console.log('✅ [SIGNUP] OTP sent via Gmail successfully');
+      }
     } catch (emailErr: any) {
-      console.error('[SIGNUP] Failed to send OTP email:', emailErr.message);
+      console.error('❌ [SIGNUP] Failed to send OTP email:', emailErr.message);
+      
+      // If Resend failed, try Gmail as backup
+      if (process.env.RESEND_API_KEY) {
+        console.log('⚠️ [SIGNUP] Resend failed, trying Gmail SMTP as fallback...');
+        try {
+          await sendOtpEmail(trimmedEmail, otp);
+          console.log('✅ [SIGNUP] OTP sent via Gmail fallback successfully');
+        } catch (gmailErr: any) {
+          console.error('❌ [SIGNUP] Gmail fallback also failed:', gmailErr.message);
+        }
+      }
       // Do not fail signup just because email failed; client still has devOtp if needed
     }
 
