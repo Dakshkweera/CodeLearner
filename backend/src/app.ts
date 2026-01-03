@@ -11,19 +11,23 @@ import authRoutes from './api/auth';
 const app: Application = express();
 
 // CORS configuration
-const allowedOrigins = [
-  'http://localhost:5173',
-  'https://code-learner-suob.vercel.app', // your Vercel frontend URL
-  'https://code-learner-suob.vercel.app'
-];
+const allowedOrigins = ['http://localhost:5173'];
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (mobile apps, curl, etc.)
+      // Allow requests with no origin (mobile apps, curl, Postman, etc.)
       if (!origin) return callback(null, true);
 
-      if (allowedOrigins.includes(origin)) {
+      const isLocal = allowedOrigins.includes(origin);
+
+      // Allow any Vercel deployment whose host contains "code-learner"
+      const isVercel =
+        origin.startsWith('https://') &&
+        origin.endsWith('.vercel.app') &&
+        origin.includes('code-learner');
+
+      if (isLocal || isVercel) {
         return callback(null, true);
       }
 
