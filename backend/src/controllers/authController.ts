@@ -13,6 +13,9 @@ function generateOtp(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-this';
+const JWT_EXPIRES_IN = '7d';
+
 export const signup = async (req: Request, res: Response) => {
   try {
     const { email, password, name } = req.body as {
@@ -46,20 +49,53 @@ export const signup = async (req: Request, res: Response) => {
       if (existing.rows[0].email_verified) {
         return res.status(409).json({ error: 'User with this email already exists.' });
       }
-      // If not verified, we'll overwrite OTP and allow re-onboarding
+      // If not verified, we'll update and auto-verify
     }
 
     // Hash password
     const passwordHash = await authService.hashPassword(password);
 
-    // Generate OTP & expiry (30 minutes) ✅ EXTENDED FROM 10 TO 30 MINUTES
-    const otp = generateOtp();
-    const otpExpiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 min
-
+    // ============================================================
+    // ✅ NEW: AUTO-VERIFY USER (NO OTP REQUIRED)
+    // ============================================================
     let userId: string;
 
     if (existing.rows.length === 0) {
-      // Create new user
+      // Create new user - AUTO-VERIFIED
+      const insert = await pool.query(
+        `INSERT INTO users (email, password_hash, name, email_verified, otp_code, otp_expires_at)
+         VALUES ($1, $2, $3, true, NULL, NULL)
+         RETURNING id, ai_questions_used`,
+        [trimmedEmail, passwordHash, name || null]
+      );
+      userId = insert.rows[0].id;
+    } else {
+      // Update existing unverified user - AUTO-VERIFY
+      const update = await pool.query(
+        `UPDATE users
+         SET password_hash = $1,
+             name = $2,
+             email_verified = true,
+             otp_code = NULL,
+             otp_expires_at = NULL,
+             updated_at = NOW()
+         WHERE email = $3
+         RETURNING id, ai_questions_used`,
+        [passwordHash, name || null, trimmedEmail]
+      );
+      userId = update.rows[0].id;
+    }
+
+    // ============================================================
+    // 🔕 COMMENTED OUT: OTP EMAIL SENDING (for when you have domain)
+    // ============================================================
+    /*
+    // Generate OTP & expiry (30 minutes)
+    const otp = generateOtp();
+    const otpExpiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 min
+
+    // Store OTP in database
+    if (existing.rows.length === 0) {
       const insert = await pool.query(
         `INSERT INTO users (email, password_hash, name, email_verified, otp_code, otp_expires_at)
          VALUES ($1, $2, $3, false, $4, $5)
@@ -68,7 +104,6 @@ export const signup = async (req: Request, res: Response) => {
       );
       userId = insert.rows[0].id;
     } else {
-      // Update existing unverified user
       const update = await pool.query(
         `UPDATE users
          SET password_hash = $1,
@@ -83,9 +118,8 @@ export const signup = async (req: Request, res: Response) => {
       userId = update.rows[0].id;
     }
 
-    // ✅ SEND OTP EMAIL - TRY RESEND FIRST, FALLBACK TO GMAIL
+    // Send OTP email - Try Resend first, fallback to Gmail
     try {
-      // Check if Resend is configured
       if (process.env.RESEND_API_KEY) {
         console.log('📧 [SIGNUP] Sending OTP via Resend...');
         await sendOtpEmailResend(trimmedEmail, otp);
@@ -98,7 +132,6 @@ export const signup = async (req: Request, res: Response) => {
     } catch (emailErr: any) {
       console.error('❌ [SIGNUP] Failed to send OTP email:', emailErr.message);
       
-      // If Resend failed, try Gmail as backup
       if (process.env.RESEND_API_KEY) {
         console.log('⚠️ [SIGNUP] Resend failed, trying Gmail SMTP as fallback...');
         try {
@@ -108,15 +141,35 @@ export const signup = async (req: Request, res: Response) => {
           console.error('❌ [SIGNUP] Gmail fallback also failed:', gmailErr.message);
         }
       }
-      // Do not fail signup just because email failed; client still has devOtp if needed
     }
+    */
+
+    // ============================================================
+    // ✅ NEW: GENERATE JWT AND RETURN IMMEDIATELY (AUTO-LOGIN)
+    // ============================================================
+    const token = jwt.sign(
+      { userId, email: trimmedEmail },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
+
+    // Get user data for response
+    const userResult = await pool.query(
+      'SELECT id, email, name, ai_questions_used FROM users WHERE id = $1',
+      [userId]
+    );
+
+    const user = userResult.rows[0];
 
     return res.status(201).json({
-      message: 'Signup successful. Please verify the OTP sent to your email.',
-      userId,
-      email: trimmedEmail,
-      // dev-only: you can temporarily return otp to test easily
-      devOtp: otp,
+      message: 'Signup successful. You are now logged in.',
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        aiQuestionsUsed: user.ai_questions_used,
+      },
     });
   } catch (error: any) {
     console.error('[SIGNUP] Error:', error.message);
@@ -124,9 +177,10 @@ export const signup = async (req: Request, res: Response) => {
   }
 };
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-this';
-const JWT_EXPIRES_IN = '7d';
-
+// ============================================================
+// 🔕 COMMENTED OUT: verifyEmail (not needed without OTP)
+// ============================================================
+/*
 export const verifyEmail = async (req: Request, res: Response) => {
   try {
     const { email, otp } = req.body as { email?: string; otp?: string };
@@ -205,6 +259,7 @@ export const verifyEmail = async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Failed to verify email.' });
   }
 };
+*/
 
 export const login = async (req: Request, res: Response) => {
   try {
@@ -229,10 +284,12 @@ export const login = async (req: Request, res: Response) => {
 
     const user = result.rows[0];
 
-    // Check email verified
-    if (!user.email_verified) {
-      return res.status(403).json({ error: 'Please verify your email before logging in.' });
-    }
+    // ============================================================
+    // ✅ UPDATED: No longer check email_verified (auto-verified now)
+    // ============================================================
+    // if (!user.email_verified) {
+    //   return res.status(403).json({ error: 'Please verify your email before logging in.' });
+    // }
 
     // Check password
     const match = await authService.comparePassword(password, user.password_hash);

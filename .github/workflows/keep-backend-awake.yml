@@ -1,0 +1,23 @@
+name: Keep Render Backend Awake
+
+on:
+  schedule:
+    # Runs every 10 minutes
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # Allows manual trigger
+
+jobs:
+  ping-health:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Ping Backend Health Endpoint
+        run: |
+          echo "Pinging backend at $(date)"
+          curl -X GET https://codelearner-jnur.onrender.com/health \
+            --max-time 30 \
+            --fail \
+            --silent \
+            --show-error \
+            || echo "Health check failed, backend may be sleeping"
+          echo "Ping completed"

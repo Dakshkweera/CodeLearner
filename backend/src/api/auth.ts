@@ -1,11 +1,11 @@
 import { Router } from 'express';
-import { signup, verifyEmail, login } from '../controllers/authController';
+import { signup, /*verifyEmail*/ login } from '../controllers/authController';
 import { authenticateUser } from '../middleware/authMiddleware';
 
 const router = Router();
 
 router.post('/signup', signup);
-router.post('/verify-email', verifyEmail);
+// router.post('/verify-email', verifyEmail);
 router.post('/login', login);
 
 // Test route: get current user from token
