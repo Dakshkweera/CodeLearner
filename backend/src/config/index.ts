@@ -20,8 +20,8 @@ export const config = {
   },
   
   ai: {
-    perplexityApiKey: process.env.PERPLEXITY_API_KEY || '',
-    cohereApiKey: process.env.COHERE_API_KEY || '', // ✅ ADD THIS LINE
+    groqApiKey: process.env.GROQ_API_KEY || '',
+    cohereApiKey: process.env.COHERE_API_KEY || '',
     embeddingProvider: process.env.EMBEDDING_PROVIDER || 'cohere',
   },
 };

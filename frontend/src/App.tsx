@@ -12,7 +12,7 @@ import Login from './pages/Auth/Login';
 import LandingPage from './pages/LandingPage';
 
 function App() {
-  const { error, selectedFile, repository } = useAppStore();
+  const { error, selectedFile, repository, graphFullscreen } = useAppStore();
   const [token, setToken] = useState<string | null>(null);
 
   // Read token once on mount
@@ -23,8 +23,8 @@ function App() {
 
   const AppLayout = (
     <div className="flex h-screen flex-col bg-gray-900">
-      <Header />
-      {error && (
+      {!graphFullscreen && <Header />}
+      {!graphFullscreen && error && (
         <div className="px-6 pt-4">
           <ErrorMessage />
         </div>

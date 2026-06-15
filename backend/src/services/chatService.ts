@@ -18,13 +18,14 @@ interface ChatResponse {
 
 class ChatService {
   private apiKey: string;
-  private PERPLEXITY_API_URL = 'https://api.perplexity.ai/chat/completions';
+  private GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
+  private MODEL = 'llama-3.3-70b-versatile';
 
   constructor() {
-    this.apiKey = config.ai.perplexityApiKey;
+    this.apiKey = config.ai.groqApiKey;
 
     if (!this.apiKey) {
-      console.warn('⚠️ PERPLEXITY_API_KEY not configured');
+      console.warn('⚠️ GROQ_API_KEY not configured');
     }
   }
   /**
@@ -79,24 +80,25 @@ Provide clear explanations and reference specific files/functions when possible.
         },
       ];
 
-      // Step 4: Call Perplexity API
-      console.log('🤖 Calling Perplexity AI...');
-      const response = await fetch('https://api.perplexity.ai/chat/completions', {
+      // Step 4: Call Groq API
+      console.log('🤖 Calling Groq AI...');
+      const response = await fetch(this.GROQ_API_URL, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${config.ai.perplexityApiKey}`,
+          Authorization: `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'sonar-pro',  // More comprehensive but slower          messages,
-          temperature: 0.2, // Low temperature for more focused answers
+          model: this.MODEL,
+          messages,
+          temperature: 0.2,
           max_tokens: 1000,
         }),
       });
 
       if (!response.ok) {
         const error = await response.text();
-        throw new Error(`Perplexity API error: ${error}`);
+        throw new Error(`Groq API error: ${error}`);
       }
 
       const data = (await response.json()) as any;
@@ -166,15 +168,16 @@ Provide clear explanations and reference specific files/functions when possible.
       },
     ];
 
-    console.log('🤖 [PREEMBEDDED] Calling Perplexity AI...');
-    const response = await fetch('https://api.perplexity.ai/chat/completions', {
+    console.log('🤖 [PREEMBEDDED] Calling Groq AI...');
+    const response = await fetch(this.GROQ_API_URL, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${config.ai.perplexityApiKey}`,
+        Authorization: `Bearer ${this.apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'sonar-pro',  // More comprehensive but slower        messages,
+        model: this.MODEL,
+        messages,
         temperature: 0.2,
         max_tokens: 1000,
       }),
@@ -182,7 +185,7 @@ Provide clear explanations and reference specific files/functions when possible.
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Perplexity API error: ${error}`);
+      throw new Error(`Groq API error: ${error}`);
     }
 
     const data = (await response.json()) as any;
@@ -268,14 +271,14 @@ Example format:
 
     messages.push({ role: 'user', content: question });
 
-    const response = await fetch(this.PERPLEXITY_API_URL, {
+    const response = await fetch(this.GROQ_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify({
-        model: 'sonar-pro',
+        model: this.MODEL,
         messages,
         temperature: 0.2,
         max_tokens: 1000,
@@ -284,7 +287,7 @@ Example format:
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Perplexity API error: ${response.status} - ${errorText}`);
+      throw new Error(`Groq API error: ${response.status} - ${errorText}`);
     }
 
     const data: any = await response.json();

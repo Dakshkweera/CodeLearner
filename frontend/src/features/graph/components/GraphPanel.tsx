@@ -1,10 +1,12 @@
-
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef, useMemo } from 'react';
+import ForceGraph3D from 'react-force-graph-3d';
+import SpriteText from 'three-spritetext';
 import ReactFlow, {
   type Node,
   type Edge,
   Background,
   Controls,
+  MiniMap,
   useNodesState,
   useEdgesState,
   ConnectionLineType,
@@ -17,666 +19,786 @@ import 'reactflow/dist/style.css';
 import { useAppStore } from '../../../shared/store/appStore';
 import { toPng } from 'html-to-image';
 
+// ─── Types ─────────────────────────────────────────────────────────────────────
 
-// Custom Node Component with Focus Button and HANDLES
+type LayoutMode = '3d' | 'tree' | 'force';
+
+// ─── Helpers ───────────────────────────────────────────────────────────────────
+
+const getNodeRole = (path: string): string => {
+  const p = path.toLowerCase();
+  if (p.match(/(^|\/)(index|server|main|app)\.(js|ts)x?$/)) return 'entry';
+  if (p.includes('route') || p.includes('controller')) return 'route';
+  if (p.includes('middleware')) return 'middleware';
+  if (p.includes('util') || p.includes('helper') || p.includes('service')) return 'utility';
+  return 'default';
+};
+
+const getNodeColor = (role: string, language: string): string => {
+  if (role === 'entry') return '#10B981';
+  if (role === 'route') return '#8B5CF6';
+  if (role === 'middleware') return '#F59E0B';
+  if (role === 'utility') return '#06B6D4';
+  return language === 'typescript' ? '#3B82F6' : '#EAB308';
+};
+
+const getRoleIcon = (role: string) => {
+  if (role === 'entry') return '⚡';
+  if (role === 'route') return '🔀';
+  if (role === 'middleware') return '🔧';
+  if (role === 'utility') return '🛠';
+  return '';
+};
+
+const getFolderFromPath = (path: string) =>
+  path.includes('/') ? path.split('/').slice(0, -1).join('/') : 'root';
+
+// ─── Hierarchical layout algorithm ─────────────────────────────────────────────
+
+function computeHierarchicalPositions(
+  nodes: any[],
+  edges: any[],
+): Map<string, { x: number; y: number }> {
+  const out = new Map<string, string[]>();
+  const inDeg = new Map<string, number>();
+  nodes.forEach(n => { out.set(n.id, []); inDeg.set(n.id, 0); });
+  edges.forEach(e => {
+    if (out.has(e.source) && inDeg.has(e.target)) {
+      out.get(e.source)!.push(e.target);
+      inDeg.set(e.target, (inDeg.get(e.target) || 0) + 1);
+    }
+  });
+
+  const roots = nodes.filter(n => inDeg.get(n.id) === 0 || getNodeRole(n.path) === 'entry');
+  const layers = new Map<string, number>();
+  const queue: { id: string; layer: number }[] = [];
+  (roots.length > 0 ? roots : [nodes[0]]).forEach(n => {
+    layers.set(n.id, 0);
+    queue.push({ id: n.id, layer: 0 });
+  });
+
+  while (queue.length > 0) {
+    const { id, layer } = queue.shift()!;
+    (out.get(id) || []).forEach(t => {
+      if (!layers.has(t) || layers.get(t)! < layer + 1) {
+        layers.set(t, layer + 1);
+        queue.push({ id: t, layer: layer + 1 });
+      }
+    });
+  }
+
+  const maxLayer = Math.max(...Array.from(layers.values()), 0);
+  nodes.forEach(n => { if (!layers.has(n.id)) layers.set(n.id, maxLayer + 1); });
+
+  const byLayer = new Map<number, string[]>();
+  layers.forEach((layer, id) => {
+    if (!byLayer.has(layer)) byLayer.set(layer, []);
+    byLayer.get(layer)!.push(id);
+  });
+
+  const LAYER_H = 180;
+  const NODE_W = 260;
+  const positions = new Map<string, { x: number; y: number }>();
+  byLayer.forEach((ids, layer) => {
+    ids.forEach((id, i) => {
+      positions.set(id, {
+        x: (i - (ids.length - 1) / 2) * NODE_W,
+        y: layer * LAYER_H,
+      });
+    });
+  });
+
+  return positions;
+}
+
+// ─── Custom ReactFlow Node ──────────────────────────────────────────────────────
+
 const CustomNode = ({ data }: any) => {
-  const [isHovered, setIsHovered] = useState(false);
-
-
+  const [hovered, setHovered] = useState(false);
   return (
     <div
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{ position: 'relative', width: '100%', height: '100%' }}
     >
-      {/* Connection Handles - REQUIRED for edges */}
-      <Handle
-        type="target"
-        position={Position.Top}
-        style={{ background: '#555', opacity: 0 }}
-      />
-      
-      {/* Node Label */}
-      <div style={{ padding: '4px' }}>{data.label}</div>
+      <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+        <span style={{ fontSize: 9, fontWeight: 700, background: 'rgba(0,0,0,0.3)', borderRadius: 3, padding: '1px 4px', color: '#fff', flexShrink: 0 }}>
+          {data.language === 'typescript' ? 'TS' : 'JS'}
+        </span>
+        {data.role !== 'default' && <span style={{ fontSize: 11 }}>{getRoleIcon(data.role)}</span>}
+        <span style={{ fontSize: 11, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{data.label}</span>
+        {data.importance > 0 && (
+          <span style={{ fontSize: 9, background: 'rgba(0,0,0,0.3)', borderRadius: 10, padding: '1px 5px', color: '#fff', flexShrink: 0 }}>
+            {data.importance}
+          </span>
+        )}
+      </div>
 
-
-      {/* Tooltip - appears on hover */}
-      {isHovered && (
-        <div className="absolute -top-28 left-1/2 transform -translate-x-1/2 bg-gray-900 border-2 border-gray-600 rounded-lg shadow-2xl px-3 py-2 z-50 w-64 pointer-events-none">
-          <div className="text-xs space-y-1">
-            <p className="text-white font-bold truncate">{data.label}</p>
-            <p className="text-gray-400 text-[10px] truncate">📁 {data.path}</p>
-            <div className="flex items-center justify-between pt-1 border-t border-gray-700">
-              <span className="text-gray-300">🔤 {data.language}</span>
-              <span className="text-blue-400">📥 {data.importance} imports</span>
-            </div>
-            <p className="text-yellow-300 text-[10px] capitalize">⭐ {data.role}</p>
-            <p className="text-purple-400 text-[10px] truncate mt-1 pt-1 border-t border-gray-700">
-              📂 Folder: {data.path.includes('/') ? data.path.substring(0, data.path.lastIndexOf('/')) : 'root'}
-            </p>
+      {hovered && (
+        <div style={{
+          position: 'absolute', bottom: '115%', left: '50%', transform: 'translateX(-50%)',
+          background: '#0F172A', border: '1px solid #334155', borderRadius: 8,
+          padding: '8px 10px', zIndex: 100, width: 220, pointerEvents: 'none',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.7)',
+        }}>
+          <p style={{ color: '#F1F5F9', fontWeight: 700, fontSize: 12, marginBottom: 4 }}>{data.label}</p>
+          <p style={{ color: '#64748B', fontSize: 10, marginBottom: 5, wordBreak: 'break-all' }}>{data.path}</p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #1E293B', paddingTop: 4 }}>
+            <span style={{ color: '#94A3B8', fontSize: 10 }}>{data.language}</span>
+            <span style={{ color: '#60A5FA', fontSize: 10 }}>↙ {data.importance} imports</span>
           </div>
         </div>
       )}
 
-
-      {/* Focus Button - appears on hover */}
-      {isHovered && (
+      {hovered && (
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            data.onFocus();
+          onClick={(e) => { e.stopPropagation(); data.onFocus(); }}
+          style={{
+            position: 'absolute', top: -10, right: -10, background: '#3B82F6',
+            border: '2px solid #1D4ED8', borderRadius: '50%', width: 22, height: 22,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', zIndex: 100, fontSize: 10, color: '#fff',
           }}
-          className="absolute -top-2 -right-2 bg-blue-500 hover:bg-blue-600 text-white rounded-full w-7 h-7 flex items-center justify-center text-sm font-bold shadow-lg transition-all z-50"
-          title="Focus on this file"
-        >
-          🎯
-        </button>
+          title="Focus"
+        >🎯</button>
       )}
 
-
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        style={{ background: '#555', opacity: 0 }}
-      />
+      <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
     </div>
   );
 };
 
+const nodeTypes = { custom: CustomNode };
 
-// Register custom node types
-const nodeTypes = {
-  custom: CustomNode,
-};
+// ─── Folder Sidebar ─────────────────────────────────────────────────────────────
+// Btn is a plain render function (not a component) to avoid the nested-component
+// remount bug where React sees a new type every render and kills click handlers.
 
-
-const GraphPanelContent = () => {
-  const { graphData, setSelectedFile, setLoading, setError } = useAppStore();
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
-  const { fitView } = useReactFlow();
-
-
-  // Build and layout graph - ONLY runs when graphData/search/focus changes
-  useEffect(() => {
-    if (!graphData) {
-      setNodes([]);
-      setEdges([]);
-      return;
-    }
-
-
-    // STEP 1: Filter out isolated nodes
-    const connectedNodeIds = new Set<string>();
-    graphData.edges.forEach((edge) => {
-      connectedNodeIds.add(edge.source);
-      connectedNodeIds.add(edge.target);
-    });
-
-
-    const connectedNodes = graphData.nodes.filter((node) =>
-      connectedNodeIds.has(node.id)
-    );
-
-
-    // STEP 2: Calculate importance
-    const importanceMap = new Map<string, number>();
-    graphData.edges.forEach((edge) => {
-      importanceMap.set(edge.target, (importanceMap.get(edge.target) || 0) + 1);
-    });
-
-
-    // STEP 3: Detect file role
-    const getNodeRole = (path: string): string => {
-      const lowerPath = path.toLowerCase();
-      
-      if (lowerPath.match(/^(index|server|main|app)\.(js|ts)$/)) {
-        return 'entry';
-      }
-      if (lowerPath.includes('route') || lowerPath.includes('controller')) {
-        return 'route';
-      }
-      if (lowerPath.includes('middleware')) {
-        return 'middleware';
-      }
-      if (lowerPath.includes('util') || lowerPath.includes('helper')) {
-        return 'utility';
-      }
-      return 'default';
-    };
-
-
-    // STEP 4: Get color
-    const getNodeColor = (role: string, language: string): string => {
-      if (role === 'entry') return '#10b981';
-      if (role === 'route') return '#a78bfa';
-      if (role === 'middleware') return '#f59e0b';
-      if (role === 'utility') return '#06b6d4';
-      return language === 'typescript' ? '#3178c6' : '#f9dc3e';
-    };
-
-
-    // STEP 5: Calculate node size based on filename length
-    const getNodeSize = (filename: string, importance: number): number => {
-      const charWidth = 8;
-      const padding = 40;
-      const filenameWidth = filename.length * charWidth + padding;
-      const importanceBonus = Math.min(importance * 10, 40);
-      return Math.min(Math.max(filenameWidth + importanceBonus, 140), 300);
-    };
-
-
-    // STEP 6: Find root nodes
-    const rootNodes = connectedNodes.filter((node) => {
-      const role = getNodeRole(node.path);
-      const importsOthers = graphData.edges.some((e) => e.source === node.id);
-      return role === 'entry' || !importsOthers;
-    });
-
-
-    if (rootNodes.length === 0 && connectedNodes.length > 0) {
-      const maxImportance = Math.max(...Array.from(importanceMap.values()), 0);
-      rootNodes.push(
-        ...connectedNodes
-          .filter((n) => (importanceMap.get(n.id) || 0) >= maxImportance)
-          .slice(0, 3)
-      );
-    }
-
-
-    // STEP 7: Assign levels using BFS
-    const levels = new Map<string, number>();
-    const processed = new Set<string>();
-    const queue: Array<{ nodeId: string; level: number }> = [];
-
-
-    rootNodes.forEach((node) => {
-      queue.push({ nodeId: node.id, level: 0 });
-      levels.set(node.id, 0);
-    });
-
-
-    while (queue.length > 0) {
-      const { nodeId, level } = queue.shift()!;
-      if (processed.has(nodeId)) continue;
-      processed.add(nodeId);
-
-
-      const children = graphData.edges
-        .filter((e) => e.source === nodeId)
-        .map((e) => e.target);
-
-
-      children.forEach((childId) => {
-        if (!levels.has(childId)) {
-          levels.set(childId, level + 1);
-          queue.push({ nodeId: childId, level: level + 1 });
-        }
-      });
-    }
-
-
-    connectedNodes.forEach((node) => {
-      if (!levels.has(node.id)) {
-        levels.set(node.id, 0);
-      }
-    });
-
-
-    // STEP 8: Group nodes by level
-    const nodesByLevel = new Map<number, string[]>();
-    levels.forEach((level, nodeId) => {
-      if (!nodesByLevel.has(level)) {
-        nodesByLevel.set(level, []);
-      }
-      nodesByLevel.get(level)!.push(nodeId);
-    });
-
-
-    // STEP 9: Focus Mode - visible nodes
-    let visibleNodeIds = new Set(connectedNodes.map((n) => n.id));
-    
-    if (focusedNodeId) {
-      visibleNodeIds = new Set([focusedNodeId]);
-      
-      graphData.edges
-        .filter((e) => e.source === focusedNodeId)
-        .forEach((e) => visibleNodeIds.add(e.target));
-      
-      graphData.edges
-        .filter((e) => e.target === focusedNodeId)
-        .forEach((e) => visibleNodeIds.add(e.source));
-    }
-
-
-    // STEP 10: Search matches
-    const searchMatches = new Set<string>();
-    if (searchTerm) {
-      connectedNodes.forEach((node) => {
-        if (node.label.toLowerCase().includes(searchTerm.toLowerCase())) {
-          searchMatches.add(node.id);
-        }
-      });
-    }
-
-
-    // STEP 11: FORCE-DIRECTED WEB LAYOUT
-const nodePositions = new Map<string, { x: number; y: number }>();
-
-// Step 1: Initialize random positions for all nodes
-connectedNodes.forEach((node, index) => {
-  const angle = (index / connectedNodes.length) * 2 * Math.PI;
-  const radius = 600;
-  nodePositions.set(node.id, {
-    x: Math.cos(angle) * radius + (Math.random() - 0.5) * 200,
-    y: Math.sin(angle) * radius + (Math.random() - 0.5) * 200,
-  });
-});
-
-// Step 2: Run force simulation (simplified)
-const iterations = 180; // Number of simulation steps
-const repulsionForce = 30000; // How much nodes push each other away
-const attractionForce = 0.003; // How much connected nodes pull together
-const damping = 0.85; // Friction/stabilization
-
-for (let iter = 0; iter < iterations; iter++) {
-  const forces = new Map<string, { x: number; y: number }>();
-  
-  // Initialize forces
-  connectedNodes.forEach(node => {
-    forces.set(node.id, { x: 0, y: 0 });
-  });
-
-  // Repulsion: All nodes push each other away
-  connectedNodes.forEach(nodeA => {
-    connectedNodes.forEach(nodeB => {
-      if (nodeA.id === nodeB.id) return;
-      
-      const posA = nodePositions.get(nodeA.id)!;
-      const posB = nodePositions.get(nodeB.id)!;
-      
-      const dx = posA.x - posB.x;
-      const dy = posA.y - posB.y;
-      const distance = Math.sqrt(dx * dx + dy * dy) || 1;
-      
-      const force = repulsionForce / (distance * distance);
-      const fx = (dx / distance) * force;
-      const fy = (dy / distance) * force;
-      
-      const currentForce = forces.get(nodeA.id)!;
-      forces.set(nodeA.id, {
-        x: currentForce.x + fx,
-        y: currentForce.y + fy,
-      });
-    });
-  });
-
-  // Attraction: Connected nodes pull each other closer
-  graphData.edges.forEach(edge => {
-    const posSource = nodePositions.get(edge.source);
-    const posTarget = nodePositions.get(edge.target);
-    
-    if (!posSource || !posTarget) return;
-    
-    const dx = posTarget.x - posSource.x;
-    const dy = posTarget.y - posSource.y;
-    const distance = Math.sqrt(dx * dx + dy * dy) || 1;
-    
-    const force = distance * attractionForce;
-    const fx = (dx / distance) * force;
-    const fy = (dy / distance) * force;
-    
-    // Apply to source
-    const forceSource = forces.get(edge.source)!;
-    forces.set(edge.source, {
-      x: forceSource.x + fx,
-      y: forceSource.y + fy,
-    });
-    
-    // Apply opposite to target
-    const forceTarget = forces.get(edge.target)!;
-    forces.set(edge.target, {
-      x: forceTarget.x - fx,
-      y: forceTarget.y - fy,
-    });
-  });
-
-  // Update positions with damping
-  connectedNodes.forEach(node => {
-    const pos = nodePositions.get(node.id)!;
-    const force = forces.get(node.id)!;
-    
-    nodePositions.set(node.id, {
-      x: pos.x + force.x * damping,
-      y: pos.y + force.y * damping,
-    });
-  });
+function folderBtn(
+  label: string,
+  count: number,
+  id: string | null,
+  activeFolder: string | null,
+  onFolderClick: (f: string | null) => void,
+  depth = 0,
+) {
+  const active = activeFolder === id;
+  return (
+    <button
+      key={id ?? '__all__'}
+      onClick={() => onFolderClick(id)}
+      style={{
+        width: '100%', textAlign: 'left', padding: `7px ${12 + depth * 8}px`,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        background: active ? 'rgba(59,130,246,0.18)' : 'transparent',
+        border: 'none', cursor: 'pointer',
+        borderLeft: active ? '3px solid #3B82F6' : '3px solid transparent',
+        transition: 'background 0.1s',
+      }}
+    >
+      <span style={{
+        color: active ? '#93C5FD' : '#94A3B8', fontSize: 11,
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 130,
+      }}>
+        {label}
+      </span>
+      <span style={{
+        background: active ? '#1D4ED8' : '#1E293B',
+        color: active ? '#BFDBFE' : '#64748B',
+        fontSize: 10, borderRadius: 10, padding: '1px 6px', flexShrink: 0,
+        fontWeight: active ? 700 : 400,
+      }}>
+        {count}
+      </span>
+    </button>
+  );
 }
 
+const FolderSidebar = ({
+  graphData, activeFolder, onFolderClick,
+}: { graphData: any; activeFolder: string | null; onFolderClick: (f: string | null) => void }) => {
+  if (!graphData) return null;
 
+  // Count connected nodes per folder (same filter the graph uses)
+  const connectedIds = new Set<string>();
+  graphData.edges.forEach((e: any) => { connectedIds.add(e.source); connectedIds.add(e.target); });
+  const connectedNodes = graphData.nodes.filter((n: any) => connectedIds.has(n.id));
 
-    const flowNodes: Node[] = connectedNodes.map((node) => {
-      const importance = importanceMap.get(node.id) || 0;
-      const role = getNodeRole(node.path);
-      const nodeWidth = getNodeSize(node.label, importance);
-      const nodeColor = getNodeColor(role, node.language);
+  const folderMap = new Map<string, number>();
+  connectedNodes.forEach((n: any) => {
+    const f = getFolderFromPath(n.path);
+    folderMap.set(f, (folderMap.get(f) || 0) + 1);
+  });
+  const folders = Array.from(folderMap.entries()).sort(([a], [b]) => a.localeCompare(b));
+  const onlyOneFolder = folders.length <= 1;
 
+  return (
+    <div style={{ width: 195, flexShrink: 0, background: '#0A1628', borderRight: '1px solid #1E293B', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '10px 12px', borderBottom: '1px solid #1E293B', color: '#475569', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+        📂 Folders
+      </div>
+      <div style={{ overflowY: 'auto', flex: 1 }}>
+        {folderBtn('All files', connectedNodes.length, null, activeFolder, onFolderClick)}
+        {onlyOneFolder && (
+          <p style={{ color: '#334155', fontSize: 10, padding: '10px 12px', lineHeight: 1.5 }}>
+            All files are in the root folder — no sub-folders to filter by.
+          </p>
+        )}
+        {folders.map(([folder, count]) => {
+          const name = folder === 'root' ? '/ root' : folder.split('/').pop() || folder;
+          const icon = folder === 'root' ? '📁' : '  📂';
+          const depth = folder === 'root' ? 0 : folder.split('/').length - 1;
+          return folderBtn(`${icon} ${name}`, count, folder, activeFolder, onFolderClick, depth);
+        })}
+      </div>
+      {activeFolder && (
+        <div style={{ padding: '8px 12px', borderTop: '1px solid #1E293B' }}>
+          <button
+            onClick={() => onFolderClick(null)}
+            style={{
+              width: '100%', background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.3)',
+              color: '#F87171', borderRadius: 6, padding: '5px', fontSize: 11, cursor: 'pointer', fontWeight: 600,
+            }}
+          >✕ Clear filter</button>
+        </div>
+      )}
+    </div>
+  );
+};
 
-      const position = nodePositions.get(node.id) || { x: 0, y: 0 };
+// ─── 3D Graph View ─────────────────────────────────────────────────────────────
 
+const Graph3DView = ({
+  graphData, folderFilter, searchTerm, onFileOpen,
+}: { graphData: any; folderFilter: string | null; searchTerm: string; onFileOpen: (path: string, label: string, lang: string) => void }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dims, setDims] = useState({ w: 800, h: 600 });
+  const fgRef = useRef<any>(null);
+  const [hoveredNode, setHoveredNode] = useState<any>(null);
+  const [frozen, setFrozen] = useState(false);
+  const [settled, setSettled] = useState(false);
+  const [navLocked, setNavLocked] = useState(true);
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
+  const didInitialFit = useRef(false);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const obs = new ResizeObserver(() => setDims({ w: el.clientWidth, h: el.clientHeight }));
+    obs.observe(el);
+    setDims({ w: el.clientWidth, h: el.clientHeight });
+    return () => obs.disconnect();
+  }, []);
+
+  // Reset all state when data changes
+  useEffect(() => {
+    setSettled(false);
+    setFrozen(false);
+    setNavLocked(true);
+    setFocusedNodeId(null);
+    didInitialFit.current = false;
+  }, [graphData, folderFilter]);
+
+  // IDs of focused node + its direct neighbors
+  const focusSet = useMemo(() => {
+    if (!focusedNodeId || !graphData) return null;
+    const s = new Set<string>([focusedNodeId]);
+    graphData.edges.forEach((e: any) => {
+      if (e.source === focusedNodeId) s.add(e.target);
+      if (e.target === focusedNodeId) s.add(e.source);
+    });
+    return s;
+  }, [focusedNodeId, graphData]);
+
+  const gData = useMemo(() => {
+    if (!graphData) return { nodes: [], links: [] };
+    const connectedIds = new Set<string>();
+    graphData.edges.forEach((e: any) => { connectedIds.add(e.source); connectedIds.add(e.target); });
+
+    let ns = graphData.nodes.filter((n: any) => connectedIds.has(n.id));
+    if (folderFilter) ns = ns.filter((n: any) => getFolderFromPath(n.path) === folderFilter);
+    const visibleIds = new Set(ns.map((n: any) => n.id));
+
+    const imp = new Map<string, number>();
+    graphData.edges.forEach((e: any) => imp.set(e.target, (imp.get(e.target) || 0) + 1));
+    const searchLC = searchTerm.toLowerCase();
+
+    return {
+      nodes: ns.map((n: any) => {
+        const role = getNodeRole(n.path);
+        const importance = imp.get(n.id) || 0;
+        const matchesSearch = searchTerm ? n.label.toLowerCase().includes(searchLC) : true;
+        const inFocus = !focusSet || focusSet.has(n.id);
+        return {
+          id: n.id, name: n.label, path: n.path,
+          language: n.language, role, importance,
+          color: getNodeColor(role, n.language),
+          val: Math.max(2, importance * 2 + 2),
+          dimmed: !matchesSearch || !inFocus,
+          isEntry: role === 'entry',
+          isFocused: n.id === focusedNodeId,
+        };
+      }),
+      links: graphData.edges
+        .filter((e: any) => visibleIds.has(e.source) && visibleIds.has(e.target))
+        .map((e: any) => ({ source: e.source, target: e.target })),
+    };
+  }, [graphData, folderFilter, searchTerm, focusSet, focusedNodeId]);
+
+  // Apply strong repulsion forces so nodes spread out
+  useEffect(() => {
+    const fg = fgRef.current;
+    if (!fg || gData.nodes.length === 0) return;
+    const timer = setTimeout(() => {
+      try {
+        fg.d3Force('charge')?.strength(-500);
+        fg.d3Force('link')?.distance(100).strength(0.15);
+        fg.d3Force('center')?.strength(0.02);
+        fg.d3ReheatSimulation();
+      } catch (_) {}
+    }, 80);
+    return () => clearTimeout(timer);
+  }, [gData]);
+
+  // ── Camera controls ──────────────────────────────────────────────────────────
+
+  const zoomCamera = useCallback((factor: number) => {
+    const fg = fgRef.current;
+    if (!fg) return;
+    try {
+      const pos = fg.camera().position;
+      const dist = Math.sqrt(pos.x ** 2 + pos.y ** 2 + pos.z ** 2);
+      const scale = (dist * factor) / dist;
+      fg.cameraPosition({ x: pos.x * scale, y: pos.y * scale, z: pos.z * scale }, undefined, 250);
+    } catch (_) {}
+  }, []);
+
+  const fitAll = useCallback(() => {
+    try { fgRef.current?.zoomToFit(400, 80); } catch (_) {}
+  }, []);
+
+  const toggleFreeze = useCallback(() => {
+    const fg = fgRef.current;
+    if (!fg) return;
+    if (!frozen) {
+      gData.nodes.forEach((node: any) => { node.fx = node.x; node.fy = node.y; node.fz = node.z; });
+      setFrozen(true);
+    } else {
+      gData.nodes.forEach((node: any) => { delete node.fx; delete node.fy; delete node.fz; });
+      fg.d3ReheatSimulation();
+      setFrozen(false);
+    }
+  }, [frozen, gData]);
+
+  // ── Click: first click = focus, second click on same node = open file ────────
+
+  const handleNodeClick = useCallback((node: any) => {
+    if (!node) return;
+    if (focusedNodeId === node.id) {
+      // Already focused — second click opens the file
+      onFileOpen(node.path, node.name, node.language);
+      setFocusedNodeId(null);
+    } else {
+      // First click on any node = enter focus mode
+      setFocusedNodeId(node.id);
+    }
+  }, [focusedNodeId, onFileOpen]);
+
+  // ── Node renderer ─────────────────────────────────────────────────────────────
+
+  const nodeThreeObject = useCallback((node: any) => {
+    const sprite = new SpriteText(node.name);
+    if (node.dimmed) {
+      sprite.color = '#1E293B';
+      sprite.backgroundColor = '#0A162899';
+      sprite.borderColor = '#1E293B';
+      sprite.textHeight = 3;
+    } else {
+      sprite.color = '#ffffff';
+      sprite.textHeight = node.isFocused ? node.val * 1.6 + 6 : node.val * 1.1 + 3;
+      sprite.backgroundColor = node.color + (node.isFocused ? 'ee' : 'cc');
+      sprite.borderColor = node.isFocused ? '#ffffff' : node.color;
+      sprite.borderWidth = node.isFocused ? 3 : node.isEntry ? 2 : 0.8;
+    }
+    sprite.borderRadius = 4;
+    sprite.padding = 2.5;
+    return sprite;
+  }, []);
+
+  const handleEngineStop = useCallback(() => {
+    setSettled(true);
+    if (!didInitialFit.current) {
+      didInitialFit.current = true;
+      try { fgRef.current?.zoomToFit(600, 80); } catch (_) {}
+    }
+  }, []);
+
+  // Focused node object (for the banner label)
+  const focusedNode = focusedNodeId
+    ? gData.nodes.find((n: any) => n.id === focusedNodeId) ?? null
+    : null;
+
+  return (
+    <div
+      ref={containerRef}
+      onDoubleClick={() => setNavLocked(false)}
+      style={{ width: '100%', height: '100%', position: 'relative', background: '#050A18', cursor: navLocked ? 'default' : 'grab' }}
+    >
+      {dims.w > 0 && (
+        <ForceGraph3D
+          key={folderFilter ?? '__all__'}
+          ref={fgRef}
+          graphData={gData}
+          width={dims.w}
+          height={dims.h}
+          backgroundColor="#050A18"
+          nodeThreeObject={nodeThreeObject}
+          nodeThreeObjectExtend={false}
+          linkColor={(link: any) => {
+            if (!focusSet) return 'rgba(96,165,250,0.22)';
+            const s = typeof link.source === 'object' ? link.source.id : link.source;
+            const t = typeof link.target === 'object' ? link.target.id : link.target;
+            return focusSet.has(s) && focusSet.has(t) ? 'rgba(96,165,250,0.8)' : 'rgba(30,41,59,0.15)';
+          }}
+          linkWidth={(link: any) => {
+            if (!focusSet) return 0.8;
+            const s = typeof link.source === 'object' ? link.source.id : link.source;
+            const t = typeof link.target === 'object' ? link.target.id : link.target;
+            return focusSet.has(s) && focusSet.has(t) ? 2.5 : 0.3;
+          }}
+          linkDirectionalParticles={(link: any) => {
+            if (!focusSet) return 1;
+            const s = typeof link.source === 'object' ? link.source.id : link.source;
+            const t = typeof link.target === 'object' ? link.target.id : link.target;
+            return focusSet.has(s) && focusSet.has(t) ? 4 : 0;
+          }}
+          linkDirectionalParticleWidth={3}
+          linkDirectionalParticleSpeed={0.006}
+          linkDirectionalParticleColor={() => '#60A5FA'}
+          warmupTicks={180}
+          cooldownTicks={300}
+          d3AlphaDecay={0.04}
+          d3VelocityDecay={0.4}
+          onNodeClick={handleNodeClick}
+          onNodeHover={(node: any) => setHoveredNode(node || null)}
+          onBackgroundClick={() => setFocusedNodeId(null)}
+          onEngineStop={handleEngineStop}
+          showNavInfo={false}
+          enableNodeDrag={!navLocked}
+          enableNavigationControls={!navLocked}
+        />
+      )}
+
+      {/* ── Focus mode banner ── */}
+      {focusedNode && (
+        <div style={{
+          position: 'absolute', top: 60, left: '50%', transform: 'translateX(-50%)',
+          background: '#1E3A5F', border: '1px solid #3B82F6',
+          borderRadius: 10, padding: '8px 16px', zIndex: 20,
+          display: 'flex', alignItems: 'center', gap: 12,
+          boxShadow: '0 4px 20px rgba(59,130,246,0.4)',
+        }}>
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: focusedNode.color, boxShadow: `0 0 8px ${focusedNode.color}` }} />
+          <span style={{ color: '#BFDBFE', fontSize: 12, fontWeight: 700 }}>
+            🎯 {focusedNode.name}
+          </span>
+          <span style={{ color: '#60A5FA', fontSize: 11 }}>
+            {(focusSet?.size ?? 1) - 1} connections
+          </span>
+          <div style={{ width: 1, height: 14, background: '#334155' }} />
+          <button
+            onClick={() => { onFileOpen(focusedNode.path, focusedNode.name, focusedNode.language); setFocusedNodeId(null); }}
+            style={{ background: '#2563EB', border: 'none', color: '#fff', borderRadius: 6, padding: '3px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}
+          >Open File →</button>
+          <button
+            onClick={() => setFocusedNodeId(null)}
+            style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontSize: 14 }}
+          >✕</button>
+        </div>
+      )}
+
+      {/* ── Nav lock hint ── */}
+      {navLocked && !focusedNode && (
+        <div style={{
+          position: 'absolute', bottom: 50, left: '50%', transform: 'translateX(-50%)',
+          background: 'rgba(10,22,40,0.9)', border: '1px solid #334155',
+          borderRadius: 20, padding: '6px 16px', zIndex: 15,
+          display: 'flex', alignItems: 'center', gap: 8, pointerEvents: 'none',
+        }}>
+          <span style={{ fontSize: 14 }}>🔒</span>
+          <span style={{ color: '#64748B', fontSize: 11 }}>
+            Double-click to enable rotate / zoom · Click node to focus
+          </span>
+        </div>
+      )}
+
+      {/* ── Camera controls panel (right side) ── */}
+      <div style={{
+        position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)',
+        background: 'rgba(10,22,40,0.95)', border: '1px solid #1E293B',
+        borderRadius: 10, overflow: 'hidden', backdropFilter: 'blur(10px)',
+        boxShadow: '0 4px 24px rgba(0,0,0,0.6)',
+        display: 'flex', flexDirection: 'column', minWidth: 92,
+        zIndex: 10,
+      }}>
+        <div style={{ padding: '6px 10px', borderBottom: '1px solid #1E293B', color: '#475569', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', textAlign: 'center' }}>
+          Camera
+        </div>
+
+        <button onClick={() => setNavLocked(v => !v)} style={{
+          padding: '8px 10px', border: 'none', borderBottom: '1px solid #1E293B',
+          background: navLocked ? 'rgba(239,68,68,0.15)' : 'rgba(34,197,94,0.15)',
+          color: navLocked ? '#F87171' : '#4ADE80',
+          cursor: 'pointer', fontSize: 12, fontWeight: 700,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+        }}>
+          {navLocked ? '🔒 Locked' : '🔓 Free'}
+        </button>
+
+        <button onClick={() => zoomCamera(0.65)} title="Zoom In" style={{
+          padding: '9px', border: 'none', borderBottom: '1px solid #1E293B',
+          background: 'transparent', color: '#E2E8F0', cursor: 'pointer',
+          fontSize: 15, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+        }}>🔍<span style={{ fontWeight: 700, fontSize: 16 }}>+</span></button>
+
+        <button onClick={() => zoomCamera(1.5)} title="Zoom Out" style={{
+          padding: '9px', border: 'none', borderBottom: '1px solid #1E293B',
+          background: 'transparent', color: '#E2E8F0', cursor: 'pointer',
+          fontSize: 15, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+        }}>🔍<span style={{ fontWeight: 700, fontSize: 16 }}>−</span></button>
+
+        <button onClick={fitAll} title="Fit all nodes in view" style={{
+          padding: '9px', border: 'none', borderBottom: '1px solid #1E293B',
+          background: 'transparent', color: '#60A5FA', cursor: 'pointer',
+          fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>⊡ Fit</button>
+
+        {focusedNodeId && (
+          <button onClick={() => setFocusedNodeId(null)} title="Exit focus mode" style={{
+            padding: '9px', border: 'none', borderBottom: '1px solid #1E293B',
+            background: 'rgba(59,130,246,0.2)', color: '#60A5FA',
+            cursor: 'pointer', fontSize: 12, fontWeight: 700,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3,
+          }}>✕ Focus</button>
+        )}
+
+        <button onClick={toggleFreeze} title={frozen ? 'Unfreeze' : 'Freeze nodes'} style={{
+          padding: '9px', border: 'none',
+          background: frozen ? 'rgba(59,130,246,0.2)' : 'transparent',
+          color: frozen ? '#60A5FA' : '#94A3B8',
+          cursor: 'pointer', fontSize: 13,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, fontWeight: frozen ? 700 : 400,
+        }}>
+          {frozen ? '❄️ Fixed' : '📌 Fix'}
+        </button>
+      </div>
+
+      {/* Settling indicator */}
+      {!settled && (
+        <div style={{
+          position: 'absolute', top: 60, left: '50%', transform: 'translateX(-50%)',
+          background: 'rgba(10,22,40,0.9)', border: '1px solid #1E293B',
+          borderRadius: 20, padding: '4px 14px',
+          color: '#475569', fontSize: 11,
+          display: 'flex', alignItems: 'center', gap: 6,
+        }}>
+          <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: '#F59E0B' }} />
+          Simulation settling…
+        </div>
+      )}
+
+      {/* Hover card — only show when not focused or hovering a different node */}
+      {hoveredNode && hoveredNode.id !== focusedNodeId && (
+        <div style={{
+          position: 'absolute', bottom: 50, left: '50%', transform: 'translateX(-50%)',
+          background: '#0F172A', border: `1px solid ${hoveredNode.color}88`,
+          borderRadius: 10, padding: '10px 14px', pointerEvents: 'none',
+          boxShadow: `0 0 30px ${hoveredNode.color}44`, minWidth: 220,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+            <div style={{ width: 10, height: 10, borderRadius: '50%', background: hoveredNode.color, flexShrink: 0 }} />
+            <span style={{ color: '#F1F5F9', fontWeight: 700, fontSize: 13 }}>{hoveredNode.name}</span>
+          </div>
+          <p style={{ color: '#64748B', fontSize: 10, marginBottom: 4, wordBreak: 'break-all' }}>{hoveredNode.path}</p>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <span style={{ color: '#94A3B8', fontSize: 10 }}>{hoveredNode.language}</span>
+            {hoveredNode.importance > 0 && <span style={{ color: '#60A5FA', fontSize: 10 }}>↙ {hoveredNode.importance} imports</span>}
+            {hoveredNode.role !== 'default' && <span style={{ color: '#FCD34D', fontSize: 10 }}>{getRoleIcon(hoveredNode.role)} {hoveredNode.role}</span>}
+          </div>
+          <p style={{ color: '#475569', fontSize: 9, marginTop: 4 }}>
+            {focusedNodeId ? 'Click to focus this node' : 'Click to focus · 2nd click opens file'}
+          </p>
+        </div>
+      )}
+
+      {/* Controls hint */}
+      <div style={{
+        position: 'absolute', bottom: 12, left: 12,
+        background: 'rgba(10,22,40,0.85)', border: '1px solid #1E293B',
+        borderRadius: 8, padding: '5px 10px', backdropFilter: 'blur(6px)',
+      }}>
+        <p style={{ color: '#475569', fontSize: 10 }}>
+          {focusedNodeId ? '🎯 Click neighbors to refocus · Click background to exit · Open File button to view code' : 'Click node to focus · Double-click to rotate'}
+        </p>
+      </div>
+    </div>
+  );
+};
+
+// ─── 2D ReactFlow Graph View ────────────────────────────────────────────────────
+
+const Graph2DView = ({
+  graphData, folderFilter, searchTerm, layoutMode, onFileOpen,
+}: {
+  graphData: any; folderFilter: string | null; searchTerm: string;
+  layoutMode: 'tree' | 'force'; onFileOpen: (path: string, label: string, lang: string) => void;
+}) => {
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!graphData) { setNodes([]); setEdges([]); return; }
+
+    const connectedIds = new Set<string>();
+    graphData.edges.forEach((e: any) => { connectedIds.add(e.source); connectedIds.add(e.target); });
+
+    let ns = graphData.nodes.filter((n: any) => connectedIds.has(n.id));
+    if (folderFilter) ns = ns.filter((n: any) => getFolderFromPath(n.path) === folderFilter);
+    const visibleIds = new Set(ns.map((n: any) => n.id));
+
+    const imp = new Map<string, number>();
+    graphData.edges.forEach((e: any) => imp.set(e.target, (imp.get(e.target) || 0) + 1));
+
+    const searchLC = searchTerm.toLowerCase();
+    const searchMatches = new Set<string>();
+    if (searchTerm) ns.forEach((n: any) => { if (n.label.toLowerCase().includes(searchLC)) searchMatches.add(n.id); });
+
+    const focusSet = new Set<string>();
+    if (focusedId && visibleIds.has(focusedId)) {
+      focusSet.add(focusedId);
+      graphData.edges.forEach((e: any) => {
+        if (e.source === focusedId) focusSet.add(e.target);
+        if (e.target === focusedId) focusSet.add(e.source);
+      });
+    }
+
+    // Compute positions
+    let positions: Map<string, { x: number; y: number }>;
+    if (layoutMode === 'tree') {
+      positions = computeHierarchicalPositions(ns, graphData.edges);
+    } else {
+      positions = new Map();
+      ns.forEach((n: any, i: number) => {
+        const angle = (i / ns.length) * 2 * Math.PI;
+        const r = Math.max(350, ns.length * 18);
+        positions.set(n.id, { x: Math.cos(angle) * r + (Math.random() - 0.5) * 120, y: Math.sin(angle) * r + (Math.random() - 0.5) * 120 });
+      });
+      for (let iter = 0; iter < 220; iter++) {
+        const forces = new Map<string, { x: number; y: number }>();
+        ns.forEach((n: any) => forces.set(n.id, { x: 0, y: 0 }));
+        ns.forEach((a: any) => {
+          ns.forEach((b: any) => {
+            if (a.id === b.id) return;
+            const pa = positions.get(a.id)!, pb = positions.get(b.id)!;
+            const dx = pa.x - pb.x, dy = pa.y - pb.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+            const force = 32000 / (dist * dist);
+            const fa = forces.get(a.id)!;
+            forces.set(a.id, { x: fa.x + (dx / dist) * force, y: fa.y + (dy / dist) * force });
+          });
+        });
+        graphData.edges.forEach((e: any) => {
+          const ps = positions.get(e.source), pt = positions.get(e.target);
+          if (!ps || !pt) return;
+          const dx = pt.x - ps.x, dy = pt.y - ps.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          const force = dist * 0.004;
+          const fx = (dx / dist) * force, fy = (dy / dist) * force;
+          const fs = forces.get(e.source), ft = forces.get(e.target);
+          if (fs) forces.set(e.source, { x: fs.x + fx, y: fs.y + fy });
+          if (ft) forces.set(e.target, { x: ft.x - fx, y: ft.y - fy });
+        });
+        ns.forEach((n: any) => {
+          const p = positions.get(n.id)!, f = forces.get(n.id)!;
+          positions.set(n.id, { x: p.x + f.x * 0.85, y: p.y + f.y * 0.85 });
+        });
+      }
+    }
+
+    const flowNodes: Node[] = ns.map((n: any) => {
+      const importance = imp.get(n.id) || 0;
+      const role = getNodeRole(n.path);
+      const color = getNodeColor(role, n.language);
+      const width = Math.min(Math.max(n.label.length * 8 + 90, 130), 260);
 
       let opacity = 1;
-      let borderColor = '#555';
-      let borderWidth = 2;
+      let borderColor = 'rgba(255,255,255,0.12)';
+      let borderWidth = 1.5;
 
-
-      if (focusedNodeId) {
-        if (visibleNodeIds.has(node.id)) {
-          opacity = 1;
-          if (node.id === focusedNodeId) {
-            borderColor = '#3b82f6';
-            borderWidth = 4;
-          }
-        } else {
-          opacity = 0.1;
-        }
+      if (focusedId && visibleIds.has(focusedId)) {
+        if (!focusSet.has(n.id)) { opacity = 0.06; }
+        else if (n.id === focusedId) { borderColor = '#60A5FA'; borderWidth = 3; }
+        else { borderColor = 'rgba(96,165,250,0.5)'; borderWidth = 2; }
       }
-      
+
       if (searchTerm && searchMatches.size > 0) {
-        if (searchMatches.has(node.id)) {
-          borderColor = '#ff6b35';
-          borderWidth = 4;
-        } else {
-          opacity = 0.2;
-        }
+        opacity = searchMatches.has(n.id) ? 1 : Math.min(opacity, 0.1);
+        if (searchMatches.has(n.id)) { borderColor = '#F97316'; borderWidth = 3; }
       }
-
 
       return {
-        id: node.id,
-        type: 'custom',
-        data: {
-          label: node.label,
-          path: node.path,
-          language: node.language,
-          role,
-          importance,
-          onFocus: () => setFocusedNodeId(node.id),
-        },
-        position: position,
+        id: n.id, type: 'custom',
+        data: { label: n.label, path: n.path, language: n.language, role, importance, onFocus: () => setFocusedId(n.id) },
+        position: positions.get(n.id) || { x: 0, y: 0 },
         style: {
-          background: nodeColor,
-          color: ['entry', 'route', 'middleware', 'utility'].includes(role) || node.language === 'typescript' ? '#fff' : '#000',
+          background: color, color: '#fff',
           border: `${borderWidth}px solid ${borderColor}`,
-          borderRadius: '8px',
-          padding: '12px',
-          fontSize: '11px',
-          fontWeight: searchMatches.has(node.id) ? 700 : 500,
-          width: nodeWidth,
-          opacity,
-          transition: 'all 0.3s ease',
+          borderRadius: 10, padding: '7px 10px', fontSize: 11, width,
+          opacity, transition: 'opacity 0.2s, border 0.2s',
+          boxShadow: n.id === focusedId ? `0 0 24px ${color}99` : '0 2px 10px rgba(0,0,0,0.5)',
+          cursor: 'pointer',
         },
       };
     });
 
-
-
-    // STEP 12: Create edges
     const flowEdges: Edge[] = graphData.edges
-      .filter(
-        (edge) =>
-          connectedNodeIds.has(edge.source) && connectedNodeIds.has(edge.target)
-      )
-      .map((edge) => {
-        let strokeColor = '#888';
-        let strokeWidth = 2;
-        let opacity = 0.6;
-
-
-        if (focusedNodeId) {
-          const isConnected =
-            visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target);
-          
-          if (isConnected) {
-            strokeColor = '#60a5fa';
-            strokeWidth = 3;
-            opacity = 1;
-          } else {
-            opacity = 0.2;
-          }
-        }
-
-
-        if (searchTerm && searchMatches.size > 0) {
-          opacity = 0.3;
-        }
-
-
+      .filter((e: any) => visibleIds.has(e.source) && visibleIds.has(e.target))
+      .map((e: any) => {
+        const lit = !focusedId || (focusSet.has(e.source) && focusSet.has(e.target));
         return {
-          id: edge.id,
-          source: edge.source,
-          target: edge.target,
-          type: 'smoothstep',
-          animated: focusedNodeId ? (visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target)) : false,
-          markerEnd: {
-            type: 'arrowclosed',
-            color: strokeColor,
-            width: 20,
-            height: 20,
-          },
-          style: {
-            stroke: strokeColor,
-            strokeWidth: strokeWidth,
-            opacity: opacity,
-          },
+          id: e.id, source: e.source, target: e.target,
+          type: 'smoothstep', animated: !!focusedId && lit,
+          markerEnd: { type: 'arrowclosed', color: lit ? '#60A5FA' : '#1E293B', width: 14, height: 14 },
+          style: { stroke: lit ? '#3B82F6' : '#1E293B', strokeWidth: lit ? 2 : 1, opacity: lit ? 0.65 : 0.12 },
         };
       });
 
-
     setNodes(flowNodes);
     setEdges(flowEdges);
-  }, [graphData, setNodes, setEdges, searchTerm, focusedNodeId]);
+  }, [graphData, searchTerm, focusedId, folderFilter, layoutMode, setNodes, setEdges]);
 
-
-  // Export handler with high quality
-  const handleExport = useCallback(async () => {
-    try {
-      fitView({ padding: 0.1, duration: 200 });
-      await new Promise(resolve => setTimeout(resolve, 400));
-      
-      const viewportElement = document.querySelector('.react-flow__viewport') as HTMLElement;
-      if (!viewportElement) {
-        alert('Graph element not found');
-        return;
-      }
-
-
-      const dataUrl = await toPng(viewportElement, {
-        backgroundColor: '#1f2937',
-        quality: 1,
-        pixelRatio: 4,
-        cacheBust: true,
-      });
-
-
-      const link = document.createElement('a');
-      const repo = useAppStore.getState().repository;
-      link.download = `${repo?.name || 'graph'}-dependency-graph.png`;
-      link.href = dataUrl;
-      link.click();
-    } catch (error) {
-      console.error('Export failed:', error);
-      alert('Export failed. Please try again.');
-    }
-  }, [fitView]);
-
-
-  // Handle SINGLE CLICK - View code
-  const onNodeClick = useCallback(
-    async (_event: any, node: Node) => {
-      const filePath = node.data.path;
-      const repo = useAppStore.getState().repository;
-
-
-      if (!repo || !filePath) return;
-
-
-      try {
-        setLoading({ loadingFile: true });
-        setError(null);
-
-
-        const { fileService } = await import('../../codeViewer');
-        const fileData = await fileService.getFileContent(
-          repo.owner,
-          repo.name,
-          filePath
-        );
-
-
-        setSelectedFile({
-          path: filePath,
-          content: fileData.content,
-          language: fileService.detectLanguage(filePath),
-        });
-
-
-        setLoading({ loadingFile: false });
-      } catch (error: any) {
-        setError({ message: error.message, type: 'api' });
-        setLoading({ loadingFile: false });
-      }
-    },
-    [setSelectedFile, setLoading, setError]
-  );
-
-
-  // Empty state
-  if (!graphData) {
-    return (
-      <div className="w-full h-full flex items-center justify-center bg-gray-800">
-        <div className="text-center">
-          <p className="text-gray-400 text-lg mb-2">No graph loaded</p>
-          <p className="text-gray-500 text-sm">
-            Enter a GitHub URL above to visualize dependencies
-          </p>
-        </div>
-      </div>
-    );
-  }
-
+  const onNodeClick = useCallback(async (_: any, node: Node) => {
+    onFileOpen(node.data.path, node.data.label, node.data.language);
+  }, [onFileOpen]);
 
   return (
-    <div className="w-full h-full bg-gray-800 relative">
-      {/* Search Bar & Export Button */}
-      <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-10 flex items-center space-x-3">
-        <div className="bg-gray-900 border-2 border-gray-700 rounded-lg shadow-lg px-4 py-2 flex items-center space-x-2">
-          <svg
-            className="w-5 h-5 text-gray-400"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-            />
-          </svg>
-          <input
-            type="text"
-            placeholder="Search files..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="bg-transparent text-white outline-none w-64 placeholder-gray-500"
-          />
-          {searchTerm && (
-            <button
-              onClick={() => setSearchTerm('')}
-              className="text-gray-400 hover:text-white"
-            >
-              ✕
-            </button>
-          )}
-        </div>
-
-
-        {/* Export Button */}
-        <button
-          onClick={handleExport}
-          className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg shadow-lg flex items-center space-x-2 transition-colors"
-          title="Export full graph as high-quality PNG"
-        >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-          </svg>
-          <span className="text-sm font-semibold">Export</span>
-        </button>
-      </div>
-
-
-      {/* Focus Mode Banner */}
-      {focusedNodeId && (
-        <div className="absolute top-20 left-1/2 transform -translate-x-1/2 z-10">
-          <div className="bg-blue-600 text-white px-6 py-3 rounded-lg shadow-xl flex items-center space-x-3">
-            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-              <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
-              <path
-                fillRule="evenodd"
-                d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z"
-                clipRule="evenodd"
-              />
-            </svg>
-            <span className="text-sm font-semibold">Focus Mode Active</span>
-            <button
-              onClick={() => setFocusedNodeId(null)}
-              className="ml-2 text-white hover:text-gray-200 font-bold text-lg"
-            >
-              ✕
-            </button>
-          </div>
+    <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+      {focusedId && (
+        <div style={{
+          position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)',
+          zIndex: 10, background: '#1D4ED8', borderRadius: 8,
+          padding: '6px 16px', display: 'flex', alignItems: 'center', gap: 10,
+          boxShadow: '0 4px 20px rgba(29,78,216,0.5)',
+        }}>
+          <span style={{ color: '#BFDBFE', fontSize: 12, fontWeight: 600 }}>🎯 Focus Mode</span>
+          <button onClick={() => setFocusedId(null)}
+            style={{ background: 'none', border: 'none', color: '#93C5FD', cursor: 'pointer', fontSize: 14 }}>
+            ✕ Exit
+          </button>
         </div>
       )}
-
-
-      {/* Legend */}
-      <div className="absolute top-4 right-4 bg-gray-900 border-2 border-gray-700 rounded-lg shadow-lg px-4 py-3 z-10">
-        <p className="text-white font-semibold text-xs mb-2">Legend</p>
-        <div className="space-y-1 text-xs">
-          <div className="flex items-center space-x-2">
-            <div className="w-3 h-3 rounded bg-green-500"></div>
-            <span className="text-gray-300">Entry Point</span>
-          </div>
-          <div className="flex items-center space-x-2">
-            <div className="w-3 h-3 rounded bg-purple-400"></div>
-            <span className="text-gray-300">Routes</span>
-          </div>
-          <div className="flex items-center space-x-2">
-            <div className="w-3 h-3 rounded bg-orange-500"></div>
-            <span className="text-gray-300">Middleware</span>
-          </div>
-          <div className="flex items-center space-x-2">
-            <div className="w-3 h-3 rounded bg-cyan-500"></div>
-            <span className="text-gray-300">Utilities</span>
-          </div>
-          <div className="flex items-center space-x-2">
-            <div className="w-3 h-3 rounded bg-yellow-400"></div>
-            <span className="text-gray-300">JavaScript</span>
-          </div>
-        </div>
-        <div className="mt-3 pt-3 border-t border-gray-700">
-          <p className="text-xs text-yellow-400 font-bold mb-1">💡 Controls:</p>
-          <p className="text-xs text-gray-300">• Click node = View code</p>
-          <p className="text-xs text-gray-300">• Hover + click 🎯 = Focus</p>
-          <p className="text-xs text-gray-300">• Hover = See folder path</p>
-        </div>
-      </div>
-
-
-      {/* React Flow Graph */}
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -686,24 +808,396 @@ for (let iter = 0; iter < iterations; iter++) {
         onNodeClick={onNodeClick}
         connectionLineType={ConnectionLineType.SmoothStep}
         fitView
-        attributionPosition="bottom-left"
+        fitViewOptions={{ padding: 0.12 }}
+        style={{ background: '#0A1628' }}
       >
-        <Background color="#555" gap={16} />
-        <Controls className="bg-gray-700 border border-gray-600" />
+        <Background color="#1E293B" gap={28} size={1} />
+        <Controls style={{ background: '#1E293B', border: '1px solid #334155' }} />
+        <MiniMap
+          style={{ background: '#050A18', border: '1px solid #334155' }}
+          nodeColor={(n) => (n.style?.background as string) || '#334155'}
+          maskColor="rgba(0,0,0,0.7)"
+        />
       </ReactFlow>
     </div>
   );
 };
 
+// ─── Main Panel ─────────────────────────────────────────────────────────────────
 
-// Wrap with ReactFlowProvider to enable useReactFlow hook
-const GraphPanel = () => {
+const GraphPanelContent = () => {
+  const { graphData, setSelectedFile, setLoading, setError, graphFullscreen, setGraphFullscreen } = useAppStore();
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>('3d');
+  const [folderFilter, setFolderFilter] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [guideDismissed, setGuideDismissed] = useState(false);
+  const [legendOpen, setLegendOpen] = useState(true);
+
+  const toggleFullscreen = useCallback(() => {
+    const next = !graphFullscreen;
+    setGraphFullscreen(next);
+    if (next) {
+      document.documentElement.requestFullscreen?.().catch(() => {});
+    } else {
+      if (document.fullscreenElement) document.exitFullscreen?.();
+    }
+  }, [graphFullscreen, setGraphFullscreen]);
+
+  // Sync state when user presses Esc to exit native fullscreen
+  useEffect(() => {
+    const onFsChange = () => {
+      if (!document.fullscreenElement) setGraphFullscreen(false);
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, [setGraphFullscreen]);
+
+  const handleFileOpen = useCallback(async (path: string, _label: string, _lang: string) => {
+    const repo = useAppStore.getState().repository;
+    if (!repo) return;
+    try {
+      setLoading({ loadingFile: true });
+      setError(null);
+      const { fileService } = await import('../../codeViewer');
+      const fileData = await fileService.getFileContent(repo.owner, repo.name, path);
+      setSelectedFile({
+        path,
+        content: fileData.content,
+        language: fileService.detectLanguage(path),
+      });
+    } catch (err: any) {
+      setError({ message: err.message, type: 'api' });
+    } finally {
+      setLoading({ loadingFile: false });
+    }
+  }, [setSelectedFile, setLoading, setError]);
+
+  const handleExport = useCallback(async () => {
+    const el = document.querySelector('.react-flow__viewport') as HTMLElement;
+    if (!el) return;
+    const url = await toPng(el, { backgroundColor: '#0A1628', quality: 1, pixelRatio: 3 });
+    const a = document.createElement('a');
+    a.download = `${useAppStore.getState().repository?.name || 'graph'}.png`;
+    a.href = url;
+    a.click();
+  }, []);
+
+  const stats = useMemo(() => {
+    if (!graphData) return null;
+    const connectedIds = new Set<string>();
+    graphData.edges.forEach((e: any) => { connectedIds.add(e.source); connectedIds.add(e.target); });
+    let ns = graphData.nodes.filter((n: any) => connectedIds.has(n.id));
+    if (folderFilter) ns = ns.filter((n: any) => getFolderFromPath(n.path) === folderFilter);
+    const folders = new Set(ns.map((n: any) => getFolderFromPath(n.path))).size;
+    return { total: ns.length, edges: graphData.edges.length, folders };
+  }, [graphData, folderFilter]);
+
+  // Entry points for the learning guide
+  const entryNodes = useMemo(() => {
+    if (!graphData) return [];
+    return graphData.nodes
+      .filter((n: any) => getNodeRole(n.path) === 'entry')
+      .slice(0, 3);
+  }, [graphData]);
+
+  const showGuide = !guideDismissed && !!graphData && (stats?.total ?? 0) > 15;
+
+  if (!graphData) {
+    return (
+      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#050A18' }}>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: 56, marginBottom: 16 }}>🗺️</div>
+          <p style={{ color: '#94A3B8', fontSize: 16, marginBottom: 8 }}>No repository loaded</p>
+          <p style={{ color: '#475569', fontSize: 13 }}>Paste a GitHub URL above and click Load</p>
+        </div>
+      </div>
+    );
+  }
+
+  const modeButtons: { mode: LayoutMode; icon: string; label: string; tip: string }[] = [
+    { mode: '3d', icon: '🌐', label: '3D', tip: 'Rotate in 3D space' },
+    { mode: 'tree', icon: '📐', label: 'Tree', tip: 'Top-down dependency tree' },
+    { mode: 'force', icon: '🔄', label: 'Force', tip: 'Physics force layout' },
+  ];
+
   return (
-    <ReactFlowProvider>
-      <GraphPanelContent />
-    </ReactFlowProvider>
+    <div style={{ display: 'flex', width: '100%', height: '100%', flexDirection: 'column', background: '#050A18' }}>
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative' }}>
+
+        {/* Sidebar toggle (collapsed) */}
+        {!sidebarOpen && (
+          <button onClick={() => setSidebarOpen(true)} style={{
+            position: 'absolute', left: 0, top: '50%', transform: 'translateY(-50%)',
+            zIndex: 20, background: '#1E293B', border: '1px solid #334155',
+            borderLeft: 'none', borderRadius: '0 6px 6px 0',
+            color: '#94A3B8', padding: '8px 5px', cursor: 'pointer', fontSize: 13,
+          }}>›</button>
+        )}
+
+        {/* Folder sidebar */}
+        {sidebarOpen && (
+          <div style={{ position: 'relative', flexShrink: 0 }}>
+            <FolderSidebar
+              graphData={graphData}
+              activeFolder={folderFilter}
+              onFolderClick={(f) => setFolderFilter(f)}
+            />
+            <button onClick={() => setSidebarOpen(false)} style={{
+              position: 'absolute', right: -10, top: '50%', transform: 'translateY(-50%)',
+              zIndex: 20, background: '#1E293B', border: '1px solid #334155',
+              borderRadius: '50%', width: 20, height: 20, color: '#94A3B8',
+              cursor: 'pointer', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>‹</button>
+          </div>
+        )}
+
+        {/* Graph canvas */}
+        <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+
+          {/* Top toolbar */}
+          <div style={{
+            position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)',
+            zIndex: 20, display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+            {/* Search */}
+            <div style={{
+              background: 'rgba(10,22,40,0.92)', border: '1px solid #334155',
+              borderRadius: 8, padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 8,
+              backdropFilter: 'blur(10px)', boxShadow: '0 4px 24px rgba(0,0,0,0.6)',
+            }}>
+              <span style={{ color: '#475569', fontSize: 13 }}>🔍</span>
+              <input
+                type="text"
+                placeholder="Search files..."
+                value={searchTerm}
+                onChange={e => setSearchTerm(e.target.value)}
+                style={{ background: 'transparent', border: 'none', outline: 'none', color: '#E2E8F0', width: 180, fontSize: 13 }}
+              />
+              {searchTerm && (
+                <button onClick={() => setSearchTerm('')}
+                  style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontSize: 12 }}>✕</button>
+              )}
+            </div>
+
+            {/* Layout toggle */}
+            <div style={{
+              display: 'flex', background: 'rgba(10,22,40,0.92)', border: '1px solid #334155',
+              borderRadius: 8, overflow: 'hidden', backdropFilter: 'blur(10px)',
+              boxShadow: '0 4px 24px rgba(0,0,0,0.6)',
+            }}>
+              {modeButtons.map(({ mode, icon, label, tip }, idx) => (
+                <button
+                  key={mode}
+                  onClick={() => setLayoutMode(mode)}
+                  title={tip}
+                  style={{
+                    padding: '6px 14px', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                    background: layoutMode === mode ? '#3B82F6' : 'transparent',
+                    color: layoutMode === mode ? '#fff' : '#94A3B8',
+                    transition: 'all 0.15s',
+                    borderRight: idx < modeButtons.length - 1 ? '1px solid #334155' : 'none',
+                  }}
+                >{icon} {label}</button>
+              ))}
+            </div>
+
+            {/* Export (2D only) */}
+            {layoutMode !== '3d' && (
+              <button onClick={handleExport} style={{
+                background: 'rgba(22,101,52,0.9)', border: '1px solid #16A34A',
+                color: '#fff', borderRadius: 8, padding: '6px 14px',
+                fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                backdropFilter: 'blur(10px)', boxShadow: '0 4px 24px rgba(0,0,0,0.6)',
+              }}>↓ PNG</button>
+            )}
+
+            {/* Fullscreen toggle */}
+            <button
+              onClick={toggleFullscreen}
+              title={graphFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen — graph only'}
+              style={{
+                background: graphFullscreen ? 'rgba(239,68,68,0.15)' : 'rgba(10,22,40,0.92)',
+                border: `1px solid ${graphFullscreen ? '#EF4444' : '#334155'}`,
+                color: graphFullscreen ? '#FCA5A5' : '#94A3B8',
+                borderRadius: 8, padding: '6px 12px',
+                fontSize: 13, cursor: 'pointer',
+                backdropFilter: 'blur(10px)', boxShadow: '0 4px 24px rgba(0,0,0,0.6)',
+                display: 'flex', alignItems: 'center', gap: 5,
+              }}
+            >
+              {graphFullscreen ? '⛶ Exit' : '⛶'}
+            </button>
+          </div>
+
+          {/* Legend — collapsible */}
+          {legendOpen ? (
+            <div style={{
+              position: 'absolute', top: 12, right: 12, zIndex: 20,
+              background: 'rgba(10,22,40,0.94)', border: '1px solid #1E293B',
+              borderRadius: 10, padding: '10px 12px', backdropFilter: 'blur(10px)',
+              boxShadow: '0 4px 24px rgba(0,0,0,0.6)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <p style={{ color: '#475569', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Legend</p>
+                <button
+                  onClick={() => setLegendOpen(false)}
+                  title="Hide legend"
+                  style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 13, lineHeight: 1, padding: '0 0 0 8px' }}
+                >✕</button>
+              </div>
+              {[
+                { color: '#10B981', label: '⚡ Entry' },
+                { color: '#8B5CF6', label: '🔀 Routes' },
+                { color: '#F59E0B', label: '🔧 Middleware' },
+                { color: '#06B6D4', label: '🛠 Utilities' },
+                { color: '#3B82F6', label: 'TypeScript' },
+                { color: '#EAB308', label: 'JavaScript' },
+              ].map(({ color, label }) => (
+                <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: 3, background: color, flexShrink: 0, boxShadow: `0 0 6px ${color}88` }} />
+                  <span style={{ color: '#CBD5E1', fontSize: 11 }}>{label}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <button
+              onClick={() => setLegendOpen(true)}
+              title="Show legend"
+              style={{
+                position: 'absolute', top: 12, right: 12, zIndex: 20,
+                background: 'rgba(10,22,40,0.94)', border: '1px solid #1E293B',
+                borderRadius: 8, padding: '5px 10px',
+                color: '#475569', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                backdropFilter: 'blur(10px)', letterSpacing: '0.06em',
+              }}
+            >◉ Legend</button>
+          )}
+
+          {/* Learning Guide */}
+          {showGuide && (
+            <div style={{
+              position: 'absolute', bottom: 50, left: 12, zIndex: 30,
+              background: 'rgba(10,22,40,0.96)', border: '1px solid #1E3A5F',
+              borderRadius: 12, padding: '14px 16px', maxWidth: 310,
+              backdropFilter: 'blur(12px)',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.7), 0 0 0 1px rgba(59,130,246,0.2)',
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+                <div>
+                  <p style={{ color: '#60A5FA', fontWeight: 700, fontSize: 13, marginBottom: 2 }}>📚 How to learn from this</p>
+                  <p style={{ color: '#475569', fontSize: 10 }}>{stats?.total} files at once is overwhelming — here's a workflow:</p>
+                </div>
+                <button onClick={() => setGuideDismissed(true)}
+                  style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 16, padding: 0, lineHeight: 1, flexShrink: 0, marginLeft: 8 }}>
+                  ✕
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {/* Step 1 */}
+                <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                  <div style={{ width: 20, height: 20, borderRadius: '50%', background: '#1D4ED8', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: '#fff', flexShrink: 0, marginTop: 1 }}>1</div>
+                  <div>
+                    <p style={{ color: '#E2E8F0', fontSize: 12, fontWeight: 600, marginBottom: 2 }}>Start at an entry point ⚡</p>
+                    <p style={{ color: '#64748B', fontSize: 11 }}>
+                      {entryNodes.length > 0
+                        ? `Click on ${entryNodes.map((n: any) => n.label).join(' or ')} — it's the app's starting file`
+                        : 'Look for index.js / server.js / app.js — that\'s where the app starts'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Step 2 */}
+                <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                  <div style={{ width: 20, height: 20, borderRadius: '50%', background: '#7C3AED', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: '#fff', flexShrink: 0, marginTop: 1 }}>2</div>
+                  <div>
+                    <p style={{ color: '#E2E8F0', fontSize: 12, fontWeight: 600, marginBottom: 2 }}>Use Focus Mode 🎯</p>
+                    <p style={{ color: '#64748B', fontSize: 11 }}>Hover a node → click the 🎯 button. You'll see only that file and its direct connections — no noise</p>
+                  </div>
+                </div>
+
+                {/* Step 3 */}
+                <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                  <div style={{ width: 20, height: 20, borderRadius: '50%', background: '#065F46', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: '#fff', flexShrink: 0, marginTop: 1 }}>3</div>
+                  <div>
+                    <p style={{ color: '#E2E8F0', fontSize: 12, fontWeight: 600, marginBottom: 2 }}>Read code + ask AI 💬</p>
+                    <p style={{ color: '#64748B', fontSize: 11 }}>Click the node to open its code. Ask the AI "what does this file do?" or "explain this function"</p>
+                  </div>
+                </div>
+
+                {/* Quick action */}
+                <div style={{ borderTop: '1px solid #1E293B', paddingTop: 8, marginTop: 2 }}>
+                  <p style={{ color: '#475569', fontSize: 10, marginBottom: 6 }}>💡 Tip: Switch to <strong style={{ color: '#94A3B8' }}>📐 Tree</strong> mode for a cleaner top-down view of dependencies</p>
+                  <button
+                    onClick={() => { setLayoutMode('tree'); setGuideDismissed(true); }}
+                    style={{ background: '#1E3A5F', border: '1px solid #3B82F6', color: '#93C5FD', borderRadius: 6, padding: '5px 12px', fontSize: 11, cursor: 'pointer', fontWeight: 600 }}
+                  >
+                    Switch to Tree view →
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Graph */}
+          {layoutMode === '3d' ? (
+            <Graph3DView
+              graphData={graphData}
+              folderFilter={folderFilter}
+              searchTerm={searchTerm}
+              onFileOpen={handleFileOpen}
+            />
+          ) : (
+            <Graph2DView
+              graphData={graphData}
+              folderFilter={folderFilter}
+              searchTerm={searchTerm}
+              layoutMode={layoutMode}
+              onFileOpen={handleFileOpen}
+            />
+          )}
+        </div>
+      </div>
+
+      {/* Bottom stats bar */}
+      {stats && (
+        <div style={{
+          height: 34, background: '#0A1628', borderTop: '1px solid #1E293B',
+          display: 'flex', alignItems: 'center', paddingLeft: 16, gap: 24, flexShrink: 0,
+        }}>
+          <span style={{ color: '#475569', fontSize: 11 }}>
+            <span style={{ color: '#60A5FA', fontWeight: 700 }}>{stats.total}</span> files
+          </span>
+          <span style={{ color: '#475569', fontSize: 11 }}>
+            <span style={{ color: '#A78BFA', fontWeight: 700 }}>{stats.edges}</span> connections
+          </span>
+          <span style={{ color: '#475569', fontSize: 11 }}>
+            <span style={{ color: '#34D399', fontWeight: 700 }}>{stats.folders}</span> folders
+          </span>
+          {folderFilter && (
+            <span style={{ color: '#F59E0B', fontSize: 11 }}>
+              📂 {folderFilter === 'root' ? '/' : folderFilter}
+              <button onClick={() => setFolderFilter(null)}
+                style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', marginLeft: 6, fontSize: 11 }}>✕</button>
+            </span>
+          )}
+          {searchTerm && <span style={{ color: '#F97316', fontSize: 11 }}>🔍 "{searchTerm}"</span>}
+          <span style={{ color: '#334155', fontSize: 10, marginLeft: 'auto', paddingRight: 12 }}>
+            {layoutMode === '3d' ? '🌐 3D Space' : layoutMode === 'tree' ? '📐 Dependency Tree' : '🔄 Force Layout'}
+          </span>
+        </div>
+      )}
+    </div>
   );
 };
 
+// ─── Export ─────────────────────────────────────────────────────────────────────
+
+const GraphPanel = () => (
+  <ReactFlowProvider>
+    <GraphPanelContent />
+  </ReactFlowProvider>
+);
 
 export default GraphPanel;

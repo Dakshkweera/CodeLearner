@@ -14,6 +14,7 @@ interface AppStore {
   selectedFile: SelectedFile | null;
   loading: LoadingState;
   error: ErrorState | null;
+  graphFullscreen: boolean;
 
   // Actions
   setRepository: (repo: Repository | null) => void;
@@ -21,6 +22,7 @@ interface AppStore {
   setSelectedFile: (file: SelectedFile | null) => void;
   setLoading: (loading: Partial<LoadingState>) => void;
   setError: (error: ErrorState | null) => void;
+  setGraphFullscreen: (v: boolean) => void;
   reset: () => void;
 }
 
@@ -34,6 +36,7 @@ const initialState = {
     loadingFile: false,
   },
   error: null,
+  graphFullscreen: false,
 };
 
 export const useAppStore = create<AppStore>((set) => ({
@@ -45,5 +48,6 @@ export const useAppStore = create<AppStore>((set) => ({
   setLoading: (loading) =>
     set((state) => ({ loading: { ...state.loading, ...loading } })),
   setError: (error) => set({ error }),
+  setGraphFullscreen: (v) => set({ graphFullscreen: v }),
   reset: () => set(initialState),
 }));
