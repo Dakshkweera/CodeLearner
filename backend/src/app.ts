@@ -4,7 +4,6 @@ import cors from 'cors';
 import fileRoutes from './api/file';
 import parseRoutes from './api/parse';
 import graphRoutes from './api/graph';
-import ragRoutes from './api/rag';
 import aiRoutes from './api/ai';
 import authRoutes from './api/auth';
 
@@ -52,7 +51,6 @@ console.log('Repo routes configured at /api/repo');
 app.use('/api/file', fileRoutes);
 app.use('/api/parse', parseRoutes);
 app.use('/api/graph', graphRoutes);
-app.use('/api/rag', ragRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/auth', authRoutes);
 
