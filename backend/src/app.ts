@@ -2,7 +2,6 @@ import express, { Application } from 'express';
 import repoRoutes from './api/repo';
 import cors from 'cors';
 import fileRoutes from './api/file';
-import parseRoutes from './api/parse';
 import graphRoutes from './api/graph';
 import aiRoutes from './api/ai';
 import authRoutes from './api/auth';
@@ -49,7 +48,6 @@ app.use('/api/repo', repoRoutes);
 console.log('Repo routes configured at /api/repo');
 
 app.use('/api/file', fileRoutes);
-app.use('/api/parse', parseRoutes);
 app.use('/api/graph', graphRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/auth', authRoutes);
