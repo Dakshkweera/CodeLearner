@@ -11,11 +11,13 @@ const apiClient: AxiosInstance = axios.create({
   },
 });
 
-// Request interceptor (for future auth tokens)
+// Request interceptor — attach JWT token to every request if present
 apiClient.interceptors.request.use(
   (config) => {
-    // Future: Add auth token here
-    // config.headers.Authorization = `Bearer ${token}`;
+    const token = localStorage.getItem('codelearnerToken');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
     return config;
   },
   (error) => Promise.reject(error)
