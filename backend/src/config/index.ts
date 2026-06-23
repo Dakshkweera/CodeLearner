@@ -21,7 +21,5 @@ export const config = {
   
   ai: {
     groqApiKey: process.env.GROQ_API_KEY || '',
-    cohereApiKey: process.env.COHERE_API_KEY || '',
-    embeddingProvider: process.env.EMBEDDING_PROVIDER || 'cohere',
   },
 };

@@ -7,7 +7,6 @@ const REQUIRED_ENV = [
   'DATABASE_URL',
   'JWT_SECRET',
   'GROQ_API_KEY',
-  'COHERE_API_KEY',
 ];
 
 const missing = REQUIRED_ENV.filter(key => !process.env[key]);
